@@ -1,0 +1,9 @@
+pbl4-face-ai/.venv/
+__pycache__/
+*.pyc
+.vscode/
+pbl4-face-ai/data/embeddings.pkl
+pbl4-face-ai/data/rf_status_model.pkl
+pbl4-face-ai/data/status_dataset.csv
+pbl4-face-ai/data/registered/
+pbl4-face-ai/data/test/

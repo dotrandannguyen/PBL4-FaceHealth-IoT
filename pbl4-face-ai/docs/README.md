@@ -93,3 +93,7 @@ python main.py evaluate
 - Model `buffalo_l` (~326MB) tự tải về `~/.insightface/models/buffalo_l/` lần đầu
 - Chỉ dùng cho **mục đích nghiên cứu phi thương mại**
 - Ngưỡng cosine similarity tối ưu: xem kết quả `evaluate`
+
+
+///for RUN
+.\.venv\Scripts\python.exe gui.py

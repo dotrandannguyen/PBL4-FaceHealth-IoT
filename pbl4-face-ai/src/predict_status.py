@@ -1,7 +1,10 @@
 import joblib
+import warnings
 from pathlib import Path
 from status_features import StatusFeatureExtractor
 
+# Ẩn các cảnh báo phiên bản thừa của thư viện (như scikit-learn, protobuf)
+warnings.filterwarnings("ignore")
 def calculate_sequence_features(features_list):
     """
     Tính vector đặc trưng tổng hợp từ chuỗi 3 frames.
@@ -97,7 +100,7 @@ if __name__ == "__main__":
                     current_status = status
             
             # Hiển thị trạng thái lên màn hình
-            color = (0, 255, 0) if current_status == "Normal" else (0, 0, 255)
+            color = (0, 255, 0) if current_status == "Alert" else (0, 0, 255)
             cv2.putText(display_frame, f"Status: {current_status}", (20, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             cv2.putText(display_frame, "Bấm Q de thoat", (20, 90), 

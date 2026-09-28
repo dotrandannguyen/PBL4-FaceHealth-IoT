@@ -17,10 +17,9 @@ CSV_FILE = DATA_DIR / "status_dataset.csv"
 
 # Label mapping
 LABELS = {
-    '1': 'Normal',
-    '2': 'Drowsy',
-    '3': 'Yawn',
-    '4': 'Head-down'
+    '1': 'Alert',
+    '2': 'Fatigued',
+    '3': 'Yawning'
 }
 
 def calculate_sequence_features(features_list):
@@ -65,11 +64,10 @@ def main():
     print("📸 CÔNG CỤ THU THẬP DỮ LIỆU TRẠNG THÁI (3-FRAMES)")
     print("="*50)
     print("Hướng dẫn:")
-    print("1. Bấm '1' -> Thu thập trạng thái Normal")
-    print("2. Bấm '2' -> Thu thập trạng thái Drowsy (Nhắm mắt/Lờ đờ)")
-    print("3. Bấm '3' -> Thu thập trạng thái Yawn (Ngáp)")
-    print("4. Bấm '4' -> Thu thập trạng thái Head-down (Cúi đầu)")
-    print("5. Bấm 'Q' -> Lưu file CSV và Thoát")
+    print("1. Bấm '1' -> Thu thập trạng thái Alert (Tỉnh táo)")
+    print("2. Bấm '2' -> Thu thập trạng thái Fatigued (Mệt mỏi / Lờ đờ)")
+    print("3. Bấm '3' -> Thu thập trạng thái Yawning (Ngáp)")
+    print("4. Bấm 'Q' -> Lưu file CSV và Thoát")
     print("="*50)
 
     frame_buffer = deque(maxlen=3)
@@ -120,7 +118,7 @@ def main():
         if collecting:
             cv2.putText(display_frame, f"Recording {current_label}...", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
         else:
-            cv2.putText(display_frame, "Press 1, 2, 3, 4 to record. Q to quit", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+            cv2.putText(display_frame, "Press 1, 2, 3 to record. Q to quit", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
             
         cv2.putText(display_frame, f"Data count: {len(dataset)}", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
 

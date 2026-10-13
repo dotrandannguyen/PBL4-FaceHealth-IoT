@@ -23,3 +23,4 @@ Công nghệ cốt lõi của AI 1 là **so khớp vector đặc trưng (Feature
 - 🚧 **Đánh giá và chốt Ngưỡng (Threshold)**: Cần thu thập tập dữ liệu lớn hơn để chạy kịch bản Đánh giá (Evaluate), từ đó tìm ra điểm EER (Equal Error Rate) nhằm chốt ngưỡng nhận diện chống nhận diện nhầm.
 - 🚧 **Chống gian lận (Anti-spoofing)**: Hiện tại hệ thống có thể bị qua mặt nếu đưa ảnh điện thoại hoặc ảnh in giấy ra trước camera. Có thể cân nhắc thêm model Liveness Detection để phân biệt mặt thật/giả.
 - 🚧 **Tối ưu CSDL**: Khi số lượng sinh viên lên đến hàng ngàn, việc đọc file `.pkl` để so khớp từng người sẽ chậm lại. Cần đưa embedding vào các CSDL vector chuyên dụng như Milvus hoặc FAISS.
+

@@ -32,3 +32,4 @@ AI 2 hoạt động theo cơ chế **In-Memory Pipeline** (luồng xử lý trê
 - 🚧 **Chất lượng Dữ liệu (Dataset)**: Hiện tại mới chỉ có tool thu thập, cần bỏ thời gian để thu thập thật nhiều dữ liệu (khoảng hàng trăm dòng cho mỗi trạng thái) ở nhiều điều kiện ánh sáng, góc nghiêng mặt khác nhau để mô hình đoán không bị "ngu".
 - 🚧 **Tích hợp Chạy ngầm (Background Worker)**: Cần triển khai bước 4 (Tích hợp AI 1 và AI 2). AI 2 bắt buộc phải được code dưới dạng luồng chạy ngầm (Threading/Async) để khi xử lý 3 khung hình không làm giật lag hay treo Camera của AI 1.
 - 🚧 **Kết nối Backend / Database**: Kết quả của AI 2 cần được đóng gói và kết nối với Database MySQL/PostgreSQL thông qua FastAPI/Flask theo đúng kiến trúc ESP32 đề ra ban đầu.
+

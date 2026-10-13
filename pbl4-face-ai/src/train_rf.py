@@ -1,3 +1,4 @@
+import sys
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -5,6 +6,12 @@ from sklearn.metrics import accuracy_score, classification_report
 import joblib
 from pathlib import Path
 from rich.console import Console
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 console = Console()
 

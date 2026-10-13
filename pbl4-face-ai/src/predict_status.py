@@ -50,7 +50,7 @@ class StatusPredictor:
         """
         Nhận vào 3 tấm ảnh (frames) từ camera hoặc AI 1
         frames: list of 3 numpy arrays (ảnh cv2)
-        Trả về chuỗi: "Normal", "Drowsy", "Yawn", hoặc "Head-down"
+        Trả về: "Normal", "Fatigue", "Exhausted" (hoặc chuỗi lỗi)
         """
         if len(frames) != 3:
             return "Error: Cần truyền vào đúng 3 tấm ảnh."
@@ -80,10 +80,19 @@ if __name__ == "__main__":
         predictor = StatusPredictor()
         
         cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         print("Bật webcam để test realtime... (Bấm Q để thoát)")
         
         frame_buffer = deque(maxlen=3)
         current_status = "Unknown"
+        
+        # Bảng màu và chú thích cho từng nhãn
+        STATUS_INFO = {
+            "Normal": {"desc": "Normal: Tinh tao / Binh thuong", "color": (0, 255, 0)},
+            "Fatigue": {"desc": "Fatigue: Met moi / Lo do", "color": (0, 255, 255)},
+            "Exhausted": {"desc": "Exhausted: Kiet suc / Sup mi", "color": (0, 0, 255)},
+        }
         
         while True:
             ret, frame = cap.read()
@@ -100,13 +109,13 @@ if __name__ == "__main__":
                     current_status = status
             
             # Hiển thị trạng thái lên màn hình
-            color = (0, 255, 0) if current_status == "Alert" else (0, 0, 255)
-            cv2.putText(display_frame, f"Status: {current_status}", (20, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-            cv2.putText(display_frame, "Bấm Q de thoat", (20, 90), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            info = STATUS_INFO.get(current_status, {"desc": f"Trang thai: {current_status}", "color": (200, 200, 200)})
+            cv2.putText(display_frame, info["desc"], (20, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, info["color"], 2)
+            cv2.putText(display_frame, "Nhan 'Q' de thoat", (20, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
             
-            cv2.imshow("Test Trang Thai", display_frame)
+            cv2.imshow("Test Trang Thai - AI 2 (Realtime)", display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 

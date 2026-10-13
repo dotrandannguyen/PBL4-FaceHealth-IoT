@@ -6,6 +6,12 @@ import pandas as pd
 from collections import deque
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # Thêm src vào sys.path để import status_features
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from status_features import StatusFeatureExtractor
@@ -15,11 +21,17 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CSV_FILE = DATA_DIR / "status_dataset.csv"
 
-# Label mapping
+# Label mapping: 3 cấp độ mệt mỏi
 LABELS = {
-    '1': 'Alert',
-    '2': 'Fatigued',
-    '3': 'Yawning'
+    '1': 'Normal',
+    '2': 'Fatigue',
+    '3': 'Exhausted'
+}
+
+LABEL_NAMES = {
+    'Normal': 'Binh thuong / Tinh tao (EAR >= 0.25)',
+    'Fatigue': 'Met moi / Lo do (0.18 <= EAR < 0.25)',
+    'Exhausted': 'Kiet suc / Sup mi (EAR < 0.18)'
 }
 
 def calculate_sequence_features(features_list):
@@ -35,7 +47,7 @@ def calculate_sequence_features(features_list):
     pitches = [f['pitch'] for f in features_list]
     rolls = [f['roll'] for f in features_list]
 
-    # Tính toán như công thức
+    # Tính toán các chỉ số thống kê
     min_ear = min(ears)
     mean_ear = sum(ears) / 3.0
     max_mar = max(mars)
@@ -60,20 +72,21 @@ def main():
 
     dataset = []
     
-    print("\n" + "="*50)
-    print("📸 CÔNG CỤ THU THẬP DỮ LIỆU TRẠNG THÁI (3-FRAMES)")
-    print("="*50)
-    print("Hướng dẫn:")
-    print("1. Bấm '1' -> Thu thập trạng thái Alert (Tỉnh táo)")
-    print("2. Bấm '2' -> Thu thập trạng thái Fatigued (Mệt mỏi / Lờ đờ)")
-    print("3. Bấm '3' -> Thu thập trạng thái Yawning (Ngáp)")
-    print("4. Bấm 'Q' -> Lưu file CSV và Thoát")
-    print("="*50)
+    print("\n" + "="*60)
+    print("📸 CÔNG CỤ THU THẬP DỮ LIỆU 3 CẤP ĐỘ MỆT MỎI (AI 2)")
+    print("="*60)
+    print("Hướng dẫn thu thập:")
+    print("  [1] Normal     : Tỉnh táo / Bình thường (Mắt to, EAR >= 0.25)")
+    print("  [2] Fatigue    : Mệt mỏi / Lờ đờ (Lim dim, 0.18 <= EAR < 0.25)")
+    print("  [3] Exhausted  : Kiệt sức / Sụp mí (Sụp mắt sâu, EAR < 0.18)")
+    print("  [Q] Lưu dataset vào CSV và Thoát")
+    print("="*60)
 
     frame_buffer = deque(maxlen=3)
     current_label = None
     collecting = False
-    frames_collected = 0
+    # Đếm số mẫu theo từng nhãn để theo dõi
+    label_counts = {'Normal': 0, 'Fatigue': 0, 'Exhausted': 0}
 
     while True:
         ret, frame = cap.read()
@@ -88,41 +101,55 @@ def main():
         if feats is not None:
             frame_buffer.append(feats)
             
-            # Vẽ landmark lên màn hình cho trực quan
+            # Vẽ landmark lên màn hình
             for x, y in feats['pts']:
-                cv2.circle(display_frame, (int(x), int(y)), 1, (0, 255, 0), -1)
+                cv2.circle(display_frame, (int(x), int(y)), 1, (0, 200, 0), -1)
                 
-            # Hiện thông số
-            cv2.putText(display_frame, f"EAR: {feats['ear']:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
-            cv2.putText(display_frame, f"MAR: {feats['mar']:.2f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
-            cv2.putText(display_frame, f"Pitch: {feats['pitch']:.1f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
+            # Chỉ hiển thị số liệu thô — KHÔNG phán xét nhãn theo ngưỡng cứng
+            cv2.putText(display_frame, f"EAR : {feats['ear']:.3f}", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 200), 2)
+            cv2.putText(display_frame, f"MAR : {feats['mar']:.3f}", (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 200), 2)
+            cv2.putText(display_frame, f"Pitch: {feats['pitch']:.1f}", (10, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 200), 2)
+            cv2.putText(display_frame, f"Roll : {feats['roll']:.1f}", (10, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (200, 200, 200), 2)
         else:
-            cv2.putText(display_frame, "No face detected!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            cv2.putText(display_frame, "!! Khong thay khuon mat !!", (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-        # Logic thu thập
+        # Logic thu thập — nhãn hoàn toàn do phím người dùng bấm quyết định
         if collecting and feats is not None:
-            # Mô phỏng việc thu 3 frames cách nhau ~0.5s (ở đây ta lấy luôn 3 frames liên tiếp cho nhanh, 
-            # hoặc đợi đủ buffer)
             if len(frame_buffer) == 3:
                 vector = calculate_sequence_features(list(frame_buffer))
                 if vector:
-                    vector.append(current_label) # Thêm label ở cột cuối
+                    vector.append(current_label)
                     dataset.append(vector)
-                    print(f"✅ Đã lưu 1 chuỗi cho trạng thái: {current_label}")
+                    label_counts[current_label] += 1
+                    print(f"[{current_label}] #{label_counts[current_label]:03d} | EAR={vector[1]:.3f}  MAR={vector[2]:.3f}  Pitch={vector[6]:.1f}")
                 
-                # Reset buffer
                 frame_buffer.clear()
                 collecting = False
                 
-        # Hướng dẫn màn hình
+        # Vùng hiển thị trạng thái thu thập & phím bấm
+        h = display_frame.shape[0]
+        
         if collecting:
-            cv2.putText(display_frame, f"Recording {current_label}...", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
+            # Highlight đỏ khi đang ghi
+            cv2.rectangle(display_frame, (0, h-120), (display_frame.shape[1], h), (0, 0, 60), -1)
+            cv2.putText(display_frame, f">> DANG GHI NHAN: [{current_label}] ...", (10, h-80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 60, 255), 2)
         else:
-            cv2.putText(display_frame, "Press 1, 2, 3 to record. Q to quit", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
-            
-        cv2.putText(display_frame, f"Data count: {len(dataset)}", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+            # Hướng dẫn phím — nhãn do BẠN tự chọn, không phụ thuộc EAR
+            cv2.rectangle(display_frame, (0, h-120), (display_frame.shape[1], h), (20, 20, 20), -1)
+            cv2.putText(display_frame, "[1] Normal  [2] Fatigue  [3] Exhausted  [Q] Luu & Thoat",
+                        (10, h-80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+        
+        # Bộ đếm mẫu từng nhãn
+        counter_text = f"Normal:{label_counts['Normal']}  Fatigue:{label_counts['Fatigue']}  Exhausted:{label_counts['Exhausted']}  | Tong:{len(dataset)}"
+        cv2.putText(display_frame, counter_text, (10, h-45),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 2)
+        
+        # Mục tiêu thu thập
+        cv2.putText(display_frame, "Muc tieu: moi nhan >= 50 mau",
+                    (10, h-15), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (150, 150, 150), 1)
 
-        cv2.imshow("Data Collection", display_frame)
+        cv2.imshow("AI 2 — Thu Thap Du Lieu Trang Thai", display_frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -130,7 +157,7 @@ def main():
         elif chr(key) in LABELS.keys():
             current_label = LABELS[chr(key)]
             collecting = True
-            frame_buffer.clear() # Xóa buffer cũ, bắt đầu lấy 3 frame mới
+            frame_buffer.clear()
 
     cap.release()
     cv2.destroyAllWindows()

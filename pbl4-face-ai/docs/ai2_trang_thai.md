@@ -1,35 +1,76 @@
-# TÀI LIỆU KỸ THUẬT: AI 2 — HỆ THỐNG PHÂN TÍCH TRẠNG THÁI
+# TÀI LIỆU KỸ THUẬT: AI 2 — HỆ THỐNG PHÂN TÍCH TRẠNG THÁI & MỨC ĐỘ MỆT MỎI
 
 ## 1. Giới thiệu & Mục đích
-- **Tên mô hình**: MediaPipe Face Mesh kết hợp với thuật toán Học máy Random Forest.
-- **Mục đích**: Phân tích biểu cảm và hành vi của khuôn mặt để suy ra trạng thái sức khỏe/độ tập trung của sinh viên (chống điểm danh hộ hoặc phát hiện ngủ gật).
-- **Đầu vào (Input)**: Một chuỗi gồm 3 khung hình liên tiếp (3 frames) được lưu trực tiếp trên RAM.
-- **Đầu ra (Output)**: Nhãn trạng thái gồm: `Normal` (Bình thường), `Drowsy` (Buồn ngủ/Lờ đờ), `Yawn` (Ngáp), `Head-down` (Gục đầu).
+- **Tên mô hình**: MediaPipe Face Mesh kết hợp với thuật toán Học máy Random Forest Classifier.
+- **Mục đích**: Hoạt động độc lập để phân tích hình ảnh khuôn mặt qua camera và phân loại thành **3 cấp độ mệt mỏi** ngay tại thời điểm nhân viên quét chấm công (thời gian xử lý: 1–2 giây).
+- **Đầu vào (Input)**: Một chuỗi khung hình liên tiếp (3 frames) trong khoảng thời gian quét 1–2 giây, lưu tạm thời trực tiếp trên RAM.
+- **Đầu ra (Output)**: 3 nhãn phân loại thể trạng:
+  1. `Normal` (Bình thường / Tỉnh táo)
+  2. `Fatigue` (Mệt mỏi / Lờ đờ / Thiếu ngủ)
+  3. `Exhausted` (Kiệt sức / Siêu mệt mỏi)
+*(Ghi chú: Dữ liệu nhịp tim từ cảm biến MAX30102 sẽ được tích hợp kết hợp ở giai đoạn sau của hệ thống).*
 
-## 2. Nguyên lý hoạt động (Quy trình)
-AI 2 hoạt động theo cơ chế **In-Memory Pipeline** (luồng xử lý trên RAM) chia làm 2 giai đoạn cốt lõi:
+---
 
-**Giai đoạn A: Trích xuất đặc trưng (MediaPipe)**
-1. Nhận chuỗi 3 ảnh, dùng MediaPipe Face Mesh quét ra tọa độ 3D của 468 điểm trên khuôn mặt.
-2. Từ các điểm này, dùng toán học tính toán các chỉ số vật lý:
-   - **EAR (Eye Aspect Ratio)**: Tỷ lệ độ mở của mắt.
-   - **MAR (Mouth Aspect Ratio)**: Tỷ lệ độ mở của miệng.
-   - **Head Pose (Pitch, Roll, Yaw)**: Góc cúi ngửa, nghiêng và xoay của đầu (dùng OpenCV `solvePnP`).
-3. Tổng hợp 3 khung hình thành 1 vector duy nhất phản ánh sự thay đổi theo thời gian:
-   `Vector = [min(EAR), mean(EAR), max(MAR), mean(MAR), delta_Pitch, delta_Roll, mean_Pitch]`
+## 2. Chi tiết Định nghĩa & Thiết kế 3 Nhãn Trạng Thái
 
-**Giai đoạn B: Phân loại trạng thái (Random Forest)**
-- Đưa Vector tổng hợp vào mô hình Máy học (Random Forest).
-- Dựa trên những gì đã được "Dạy" (Huấn luyện) từ trước, Random Forest sẽ bầu chọn xem vector này thuộc về hành vi nào (Normal, Drowsy, Yawn hay Head-down).
-- Kết quả được ghi xuống Database, 3 ảnh trên RAM bị xóa ngay lập tức để giải phóng bộ nhớ.
+| Nhãn (Code) | Tên hiển thị (Tiếng Việt) | Đặc điểm hình học (MediaPipe) | Trạng thái thực tế khi chấm công | Mức độ cảnh báo & Xử lý |
+| :--- | :--- | :--- | :--- | :--- |
+| **`Normal`** | **Bình thường / Tỉnh táo** | - **$EAR \ge 0.25$** (Độ mở mắt cao, ổn định)<br>- Trục đầu hướng thẳng ($\Delta Pitch, \Delta Roll$ thấp, không gật gù) | Nhân viên bước đến máy chấm công với thần thái tươi tỉnh, tràn đầy năng lượng, mắt mở to và nhìn thẳng vào camera. | ✅ **Trạng thái tốt**: Ghi nhận chấm công thành công, thể chất đạt chuẩn. |
+| **`Fatigue`** | **Mệt mỏi / Lờ đờ / Thiếu ngủ** | - **$0.18 \le EAR < 0.25$** (Độ mở mắt giảm xuống mức thấp)<br>- Tốc độ chớp mắt chậm, mi mắt trĩu nặng | Có dấu hiệu thiếu ngủ, làm việc quá tải hoặc ca đêm. Vẫn nhìn vào camera nhưng mắt sụp xuống, lim dim, phản ứng chậm chạp. | ⚠️ **Cảnh báo Vàng**: Ghi nhận chấm công kèm cảnh báo để HR/Quản lý theo dõi sức khỏe nhân viên. |
+| **`Exhausted`** | **Kiệt sức / Siêu mệt mỏi** | - **$EAR < 0.18$** (Độ mở mắt cực kỳ thấp)<br>- Mi mắt sụp sâu che gần hết tròng mắt, các điểm mốc co rúm lại | Đang trong tình trạng suy nhược, kiệt quỵ hoặc thức trắng đêm. Mắt gần như sụp hẳn, mặt đờ đẫn, không giữ được tập trung tối thiểu. | 🚨 **Cảnh báo Đỏ**: Lưu vết sức khỏe nguy cơ cao, cần can thiệp nghỉ ngơi hoặc hỗ trợ y tế. |
 
-## 3. Những gì đã hoàn thành (Achieved)
-- ✅ Code xong module toán học tính toán EAR, MAR, Head Pose `status_features.py`.
-- ✅ Xây dựng công cụ `collect_status.py` giúp con người tự diễn xuất trước Camera để tạo ra Sách giáo khoa (Dataset) cho máy học.
-- ✅ Code xong module huấn luyện Máy học `train_rf.py`. Mô hình Random Forest đã có thể tự động đọc file CSV, học và xuất ra bộ não `rf_status_model.pkl`.
+---
 
-## 4. Những điểm cần cải tiến (Future Improvements)
-- 🚧 **Chất lượng Dữ liệu (Dataset)**: Hiện tại mới chỉ có tool thu thập, cần bỏ thời gian để thu thập thật nhiều dữ liệu (khoảng hàng trăm dòng cho mỗi trạng thái) ở nhiều điều kiện ánh sáng, góc nghiêng mặt khác nhau để mô hình đoán không bị "ngu".
-- 🚧 **Tích hợp Chạy ngầm (Background Worker)**: Cần triển khai bước 4 (Tích hợp AI 1 và AI 2). AI 2 bắt buộc phải được code dưới dạng luồng chạy ngầm (Threading/Async) để khi xử lý 3 khung hình không làm giật lag hay treo Camera của AI 1.
-- 🚧 **Kết nối Backend / Database**: Kết quả của AI 2 cần được đóng gói và kết nối với Database MySQL/PostgreSQL thông qua FastAPI/Flask theo đúng kiến trúc ESP32 đề ra ban đầu.
+## 3. Kiến trúc & Quy trình Xử lý (1–2 giây trên RAM)
 
+```
+[Camera / ESP32-CAM]
+        │
+        ▼ (Thu nhận chuỗi 3 frames trong 1-2 giây)
+ ┌────────────────────────────────────────────────────────┐
+ │ BỘ ĐỆM RAM (In-Memory Buffer)                          │
+ └────────────────────────────────────────────────────────┘
+        │
+        ▼ (Giai đoạn 1: MediaPipe Face Mesh - 468 landmarks)
+ ┌────────────────────────────────────────────────────────┐
+ │ TRÍCH XUẤT ĐẶC TRƯNG HÌNH HỌC                          │
+ │  - Eye Aspect Ratio: min(EAR), mean(EAR)               │
+ │  - Mouth Aspect Ratio: max(MAR), mean(MAR)             │
+ │  - Head Pose (solvePnP): delta_Pitch, delta_Roll,...   │
+ └────────────────────────────────────────────────────────┘
+        │
+        ▼ (Giai đoạn 2: Random Forest Inference < 5ms)
+ ┌────────────────────────────────────────────────────────┐
+ │ PHÂN LOẠI RANDOM FOREST CLASSIFIER                     │
+ │  - Output: Normal | Fatigue | Exhausted                │
+ └────────────────────────────────────────────────────────┘
+        │
+        ▼
+ [Database / Backend Server: Ghi nhận trạng thái điểm danh]
+```
+
+### Các công thức đặc trưng hình học cốt lõi:
+1. **Eye Aspect Ratio (EAR)**:
+   $$EAR = \frac{||p_2 - p_6|| + ||p_3 - p_5||}{2 \times ||p_1 - p_4||}$$
+   *Đo độ mở của mắt dựa trên khoảng cách giữa các điểm mốc mi trên và mi dưới so với chiều ngang mắt.*
+
+2. **Mouth Aspect Ratio (MAR)**:
+   $$MAR = \frac{||p_{top} - p_{bottom}||}{||p_{left} - p_{right}||}$$
+   *Đo độ mở của khuôn miệng.*
+
+3. **Head Pose Estimation (solvePnP)**:
+   *Tính góc quay 3 chiều (Pitch - Cúi/Ngửa, Roll - Nghiêng, Yaw - Xoay) để xác định độ ổn định của trục đầu.*
+
+4. **Vector đặc trưng chuỗi 3 frames**:
+   $$\text{Feature Vector} = [\min(EAR), \text{mean}(EAR), \max(MAR), \text{mean}(MAR), \Delta\text{Pitch}, \Delta\text{Roll}, \text{mean}(\text{Pitch})]$$
+
+---
+
+## 4. Danh mục File triển khai
+
+- **`src/status_features.py`**: Trích xuất tọa độ landmark MediaPipe, tính EAR, MAR, Head Pose.
+- **`scripts/collect_status.py`**: Giao diện thu thập mẫu dữ liệu chuẩn 3 nhãn (`Normal`, `Fatigue`, `Exhausted`) với gợi ý thời gian thực.
+- **`src/train_rf.py`**: Huấn luyện Random Forest với dữ liệu 3 nhãn từ file CSV, xuất mô hình `data/rf_status_model.pkl`.
+- **`src/predict_status.py`**: Module dự đoán trạng thái từ 3 khung hình liên tiếp.
+- **`gui.py`**: Giao diện tích hợp đầy đủ các chức năng thu thập, huấn luyện và kiểm thử.

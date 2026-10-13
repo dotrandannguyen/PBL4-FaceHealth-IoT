@@ -141,15 +141,15 @@ class FaceAIDashboard(tk.Tk):
 
     def handle_train_status(self):
         msg = (
-            "Hướng dẫn:\n"
-            "- Cửa sổ Webcam sẽ hiện ra.\n"
-            "- Bấm [1, 2, 3] để thu thập các trạng thái:\n"
-            "  [1] Alert (Tỉnh táo)\n"
-            "  [2] Fatigued (Mệt mỏi)\n"
-            "  [3] Yawning (Ngáp)\n"
-            "- Bấm [Q] để Lưu dữ liệu và Thoát Webcam.\n\n"
-            "Hệ thống sẽ TỰ ĐỘNG TRAIN AI ngay sau khi bạn bấm Q thoát.\n"
-            "Bắt đầu thu thập?"
+            "Hướng dẫn thu thập dữ liệu 3 cấp độ mệt mỏi (AI 2):\n"
+            "- Cửa sổ Webcam sẽ hiện ra kèm chỉ số EAR trực tiếp.\n"
+            "- Bấm các phím số tương ứng để ghi lại chuỗi 3 frames:\n"
+            "  [1] Normal    : Bình thường / Tỉnh táo (EAR >= 0.25)\n"
+            "  [2] Fatigue   : Mệt mỏi / Lờ đờ (0.18 <= EAR < 0.25)\n"
+            "  [3] Exhausted : Kiệt sức / Sụp mí (EAR < 0.18)\n"
+            "- Bấm [Q] để Lưu dữ liệu vào CSV và Thoát Webcam.\n\n"
+            "Hệ thống sẽ TỰ ĐỘNG TRAIN Random Forest ngay sau khi bạn bấm Q thoát.\n"
+            "Bạn có muốn bắt đầu ngay bây giờ?"
         )
         if messagebox.askyesno("Thu thập & Train AI", msg):
             cmd = [PYTHON_CMD, "scripts/collect_status.py"]

@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Quản lý nhân viên — Smart Attendance">
+  <title>Nhân viên — Smart Attendance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+
+<div class="app-shell">
+
+<!-- ================================================================
+     SIDEBAR
+================================================================ -->
+<aside class="sidebar" role="navigation" aria-label="Menu chính">
+  <a class="sidebar-brand" href="/">
+    <div class="brand-logo">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/>
+        <polyline points="12 6 12 12 16 14"/>
+      </svg>
+    </div>
+    <div>
+      <div class="brand-name">Smart Attendance</div>
+      <div class="brand-tagline">Hệ thống chấm công</div>
+    </div>
+  </a>
+
+  <nav class="sidebar-nav">
+
+    <a class="nav-item" id="nav-dashboard" href="/">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+          <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+        </svg>
+      </span>
+      Tổng quan
+    </a>
+
+    <div class="nav-section-label">Quản lý</div>
+
+    <a class="nav-item active" id="nav-employees" href="/employees">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+        </svg>
+      </span>
+      Nhân viên
+    </a>
+
+    <div class="nav-section-label">Chấm công</div>
+
+    <a class="nav-item" id="nav-chamcong" href="/#chamcong">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M9 11l3 3L22 4"/>
+          <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+        </svg>
+      </span>
+      Chấm công hôm nay
+    </a>
+
+    <a class="nav-item" id="nav-thongke" href="/#thongke">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="18" y1="20" x2="18" y2="10"/>
+          <line x1="12" y1="20" x2="12" y2="4"/>
+          <line x1="6"  y1="20" x2="6"  y2="14"/>
+        </svg>
+      </span>
+      Thống kê
+    </a>
+
+    <div class="nav-section-label">Giám sát</div>
+
+    <a class="nav-item" id="nav-camera" href="/#camera">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M23 7l-7 5 7 5V7z"/>
+          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+      </span>
+      Camera AI
+    </a>
+
+    <a class="nav-item" id="nav-canhbao" href="/#canhbao">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </span>
+      Cảnh báo
+    </a>
+
+    <div class="nav-section-label">Hỗ trợ</div>
+
+    <a class="nav-item" id="nav-suckhoe" href="/#suckhoe">
+      <span class="nav-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 000-7.78z"/>
+        </svg>
+      </span>
+      Sức khỏe
+    </a>
+
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-footer-text">Smart Attendance v2.0</div>
+  </div>
+</aside>
+
+<!-- ================================================================
+     TOPBAR
+================================================================ -->
+<header class="topbar" role="banner">
+  <div class="topbar-breadcrumb">
+    <a href="/">Tổng quan</a>
+    <span class="topbar-breadcrumb-sep">/</span>
+    <span class="topbar-breadcrumb-current">Nhân viên</span>
+  </div>
+
+  <div class="topbar-right">
+    <div class="user-menu">
+      <button class="user-btn" id="userBtn" aria-label="Tài khoản">
+        <div class="user-avatar-sm">AD</div>
+        <div class="user-info-text">
+          <span class="user-name-sm">Admin</span>
+          <span class="user-role-sm">Quản trị viên</span>
+        </div>
+        <svg class="user-chevron" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div class="user-dropdown">
+        <a class="dropdown-item" href="/me">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.58-7 8-7s8 3 8 7"/></svg>
+          Trang cá nhân
+        </a>
+        <div class="dropdown-divider"></div>
+        <a class="dropdown-item danger" href="/logout">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          Đăng xuất
+        </a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ================================================================
+     MAIN
+================================================================ -->
+<main class="main" role="main">
+
+  <!-- PAGE HEADER -->
+  <div class="page-header">
+    <div class="page-header-left">
+      <div class="page-title">Nhân viên</div>
+      <div class="page-subtitle">Quản lý hồ sơ và trạng thái đăng ký khuôn mặt.</div>
+    </div>
+    <div class="page-header-right">
+      <button class="btn btn-primary" id="btn-add-employee" onclick="openAddModal()">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Thêm nhân viên
+      </button>
+    </div>
+  </div>
+
+  <!-- STAT STRIP -->
+  <div class="stat-strip">
+    <div class="stat-strip-item">
+      <div class="stat-strip-num blue" id="stat-total">--</div>
+      <div class="stat-strip-label">Tổng nhân viên</div>
+    </div>
+    <div class="stat-strip-item">
+      <div class="stat-strip-num green" id="stat-registered">--</div>
+      <div class="stat-strip-label">Đã đăng ký khuôn mặt</div>
+    </div>
+    <div class="stat-strip-item">
+      <div class="stat-strip-num orange" id="stat-pending">--</div>
+      <div class="stat-strip-label">Chưa đăng ký</div>
+    </div>
+  </div>
+
+  <!-- TOOLBAR: search -->
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="search-icon">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </span>
+      <input
+        type="text"
+        id="searchInput"
+        class="search-input"
+        placeholder="Tìm theo tên hoặc mã nhân viên..."
+        oninput="filterTable(this.value)"
+      >
+    </div>
+    <span class="panel-badge" id="table-badge">Đang tải...</span>
+  </div>
+
+  <!-- TABLE PANEL -->
+  <div class="panel">
+    <div class="table-wrap">
+      <table class="data-table" id="emp-table">
+        <thead>
+          <tr>
+            <th>Nhân viên</th>
+            <th>Vai trò</th>
+            <th>Khuôn mặt</th>
+            <th style="width:80px; text-align:center;">Thao tác</th>
+          </tr>
+        </thead>
+        <tbody id="emp-tbody">
+          <tr><td colspan="4" class="td-empty">Đang tải dữ liệu...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+</div><!-- /app-shell -->
+
+<!-- ================================================================
+     MODAL: THÊM NHÂN VIÊN
+================================================================ -->
+<div class="modal-backdrop" id="modal-add" role="dialog" aria-modal="true" aria-labelledby="modal-add-title">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-add-title">Thêm nhân viên</div>
+        <div class="modal-subtitle">Điền thông tin bên dưới. Khuôn mặt đăng ký ở bước tiếp theo.</div>
+      </div>
+      <button class="modal-close" onclick="closeAddModal()" aria-label="Đóng">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label" for="add-hoten">Họ và tên <span class="required">*</span></label>
+        <input class="form-control" type="text" id="add-hoten" placeholder="Nguyễn Văn A" maxlength="150" autocomplete="off">
+        <div class="form-error" id="add-hoten-err">Vui lòng nhập họ tên</div>
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label" for="add-vaitro">Vai trò <span class="required">*</span></label>
+        <select class="form-control" id="add-vaitro">
+          <option value="">-- Chọn vai trò --</option>
+        </select>
+        <div class="form-error" id="add-vaitro-err">Vui lòng chọn vai trò</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAddModal()">Hủy</button>
+      <button class="btn btn-primary" id="btn-submit-add" onclick="submitAdd()">Lưu</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     MODAL: SỬA NHÂN VIÊN
+================================================================ -->
+<div class="modal-backdrop" id="modal-edit" role="dialog" aria-modal="true" aria-labelledby="modal-edit-title">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-edit-title">Sửa nhân viên</div>
+        <div class="modal-subtitle">Chỉ Họ tên và Vai trò có thể thay đổi.</div>
+      </div>
+      <button class="modal-close" onclick="closeEditModal()" aria-label="Đóng">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Mã nhân viên</label>
+        <div class="form-control-static" id="edit-manv-display">--</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit-hoten">Họ và tên <span class="required">*</span></label>
+        <input class="form-control" type="text" id="edit-hoten" maxlength="150" autocomplete="off">
+        <div class="form-error" id="edit-hoten-err">Vui lòng nhập họ tên</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="edit-vaitro">Vai trò <span class="required">*</span></label>
+        <select class="form-control" id="edit-vaitro">
+          <option value="">-- Chọn vai trò --</option>
+        </select>
+        <div class="form-error" id="edit-vaitro-err">Vui lòng chọn vai trò</div>
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Trạng thái khuôn mặt</label>
+        <div class="form-control-static" id="edit-khuonmat-display">--</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeEditModal()">Hủy</button>
+      <button class="btn btn-primary" id="btn-submit-edit" onclick="submitEdit()">Lưu thay đổi</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     MODAL: ĐĂNG KÝ KHUÔN MẶT (placeholder)
+================================================================ -->
+<div class="modal-backdrop" id="modal-face" role="dialog" aria-modal="true" aria-labelledby="modal-face-title">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-face-title">Đăng ký khuôn mặt</div>
+        <div class="modal-subtitle" id="modal-face-sub">--</div>
+      </div>
+      <button class="modal-close" onclick="closeFaceModal()" aria-label="Đóng">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-md); padding:24px; text-align:center;">
+        <svg style="width:36px;height:36px;color:var(--text-muted);margin:0 auto 12px;" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+        </svg>
+        <div style="font-weight:600; color:var(--text-secondary); margin-bottom:6px;">Tính năng sắp ra mắt</div>
+        <div style="font-size:12.5px; color:var(--text-muted); line-height:1.6;">
+          Chức năng đăng ký khuôn mặt sẽ được triển khai ở bước tiếp theo.<br>
+          Nhân viên sẽ đứng trước camera để hệ thống ghi nhận khuôn mặt.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeFaceModal()">Đóng</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<!-- ================================================================
+     JAVASCRIPT
+================================================================ -->
+<script src="{{ url_for('static', filename='js/ui.js') }}"></script>
+<script>
+/* ============================================================
+   GLOBALS
+============================================================ */
+const BASE_URL = '';
+let _employees = [];
+let _roles     = [];
+let _editMaNV  = null;
+
+/* ============================================================
+   LOAD ROLES
+============================================================ */
+async function loadRoles() {
+  try {
+    const resp = await fetch(`${BASE_URL}/api/roles`);
+    _roles = await resp.json();
+    populateRoleSelect('add-vaitro', _roles, '');
+    populateRoleSelect('edit-vaitro', _roles, '');
+  } catch(e) {
+    console.error('loadRoles error', e);
+  }
+}
+
+function populateRoleSelect(selectId, roles, selectedVal) {
+  const sel = document.getElementById(selectId);
+  while (sel.options.length > 1) sel.remove(1);
+  for (const r of roles) {
+    const opt = document.createElement('option');
+    opt.value = r.MaVaiTro;
+    opt.textContent = r.TenVaiTro;
+    if (String(r.MaVaiTro) === String(selectedVal)) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+/* ============================================================
+   LOAD & RENDER EMPLOYEES
+============================================================ */
+async function loadEmployees() {
+  try {
+    const resp = await fetch(`${BASE_URL}/api/employees`);
+    _employees = await resp.json();
+    renderTable(_employees);
+    renderStats(_employees);
+  } catch(e) {
+    console.error('loadEmployees error', e);
+    document.getElementById('emp-tbody').innerHTML =
+      '<tr><td colspan="4" class="td-empty">Không thể tải dữ liệu</td></tr>';
+  }
+}
+
+function renderStats(emps) {
+  const total      = emps.length;
+  const registered = emps.filter(e => e.DaDangKyKhuonMat).length;
+  document.getElementById('stat-total').textContent      = total;
+  document.getElementById('stat-registered').textContent = registered;
+  document.getElementById('stat-pending').textContent    = total - registered;
+}
+
+function renderTable(emps) {
+  const tbody = document.getElementById('emp-tbody');
+  document.getElementById('table-badge').textContent = `${emps.length} nhân viên`;
+
+  if (!emps.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="td-empty">Chưa có nhân viên nào</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = emps.map(emp => {
+    const av = initials(emp.HoTen);
+    const isAdmin = (emp.TenVaiTro || '').toLowerCase().includes('quản trị') || emp.MaVaiTro === 1;
+    const roleChip = isAdmin
+      ? `<span class="role-chip admin">${escHtml(emp.TenVaiTro || '--')}</span>`
+      : `<span class="role-chip">${escHtml(emp.TenVaiTro || '--')}</span>`;
+
+    const faceHtml = emp.DaDangKyKhuonMat
+      ? `<span class="badge badge-green">Đã đăng ký</span>`
+      : `<button class="btn btn-ghost btn-sm" onclick="openFaceModal(${emp.MaNV}, '${escHtml(emp.HoTen)}')" title="Đăng ký khuôn mặt">
+           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:13px;height:13px;">
+             <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+           </svg>
+           Chưa đăng ký
+         </button>`;
+
+    return `
+    <tr id="row-${emp.MaNV}">
+      <td>
+        <div class="emp-cell">
+          <div class="emp-avatar">${av}</div>
+          <div>
+            <div class="emp-name">${escHtml(emp.HoTen)}</div>
+            <div class="emp-id">NV${String(emp.MaNV).padStart(3,'0')}</div>
+          </div>
+        </div>
+      </td>
+      <td>${roleChip}</td>
+      <td>${faceHtml}</td>
+      <td style="text-align:center;">
+        <button class="btn-icon" onclick="openEditModal(${emp.MaNV})" title="Sửa thông tin">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function initials(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(' ');
+  return parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.substring(0, 2).toUpperCase();
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ============================================================
+   FRONTEND SEARCH FILTER
+============================================================ */
+function filterTable(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    renderTable(_employees);
+    return;
+  }
+  const filtered = _employees.filter(emp => {
+    const name = (emp.HoTen || '').toLowerCase();
+    const code = `nv${String(emp.MaNV).padStart(3,'0')}`;
+    const id   = String(emp.MaNV);
+    return name.includes(q) || code.includes(q) || id.includes(q);
+  });
+  renderTable(filtered);
+}
+
+/* ============================================================
+   MODAL ADD
+============================================================ */
+function openAddModal() {
+  document.getElementById('add-hoten').value = '';
+  document.getElementById('add-vaitro').value = '';
+  hideErr('add-hoten-err');
+  hideErr('add-vaitro-err');
+  populateRoleSelect('add-vaitro', _roles, '');
+  openModal('modal-add');
+  setTimeout(() => document.getElementById('add-hoten').focus(), 60);
+}
+
+function closeAddModal() { closeModal('modal-add'); }
+
+async function submitAdd() {
+  const hoTen    = document.getElementById('add-hoten').value.trim();
+  const maVaiTro = document.getElementById('add-vaitro').value;
+  let valid = true;
+
+  if (!hoTen)    { showErr('add-hoten-err', 'Vui lòng nhập họ tên'); valid = false; }
+  else             { hideErr('add-hoten-err'); }
+  if (!maVaiTro) { showErr('add-vaitro-err', 'Vui lòng chọn vai trò'); valid = false; }
+  else             { hideErr('add-vaitro-err'); }
+  if (!valid) return;
+
+  const btn = document.getElementById('btn-submit-add');
+  btn.disabled = true; btn.textContent = 'Đang xử lý...';
+
+  try {
+    const resp = await fetch(`${BASE_URL}/api/employees`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ HoTen: hoTen, MaVaiTro: parseInt(maVaiTro) }),
+    });
+    const data = await resp.json();
+    if (resp.status === 201) {
+      closeAddModal();
+      showToast(`Thêm nhân viên thành công (MaNV: ${data.MaNV})`, 'success');
+      await loadEmployees();
+    } else {
+      showToast(data.message || 'Lỗi khi thêm nhân viên', 'error');
+    }
+  } catch(e) {
+    showToast('Lỗi kết nối server', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Lưu';
+  }
+}
+
+/* ============================================================
+   MODAL EDIT
+============================================================ */
+function openEditModal(maNV) {
+  const emp = _employees.find(e => e.MaNV === maNV);
+  if (!emp) { showToast('Không tìm thấy nhân viên', 'error'); return; }
+
+  _editMaNV = maNV;
+  document.getElementById('edit-manv-display').textContent = `#${emp.MaNV} — ${emp.HoTen}`;
+  document.getElementById('edit-hoten').value = emp.HoTen;
+  populateRoleSelect('edit-vaitro', _roles, emp.MaVaiTro);
+  document.getElementById('edit-khuonmat-display').textContent =
+    emp.DaDangKyKhuonMat ? 'Đã đăng ký khuôn mặt' : 'Chưa đăng ký khuôn mặt';
+  hideErr('edit-hoten-err');
+  hideErr('edit-vaitro-err');
+  openModal('modal-edit');
+  setTimeout(() => document.getElementById('edit-hoten').focus(), 60);
+}
+
+function closeEditModal() { closeModal('modal-edit'); _editMaNV = null; }
+
+async function submitEdit() {
+  if (!_editMaNV) return;
+  const hoTen    = document.getElementById('edit-hoten').value.trim();
+  const maVaiTro = document.getElementById('edit-vaitro').value;
+  let valid = true;
+
+  if (!hoTen)    { showErr('edit-hoten-err', 'Vui lòng nhập họ tên'); valid = false; }
+  else             { hideErr('edit-hoten-err'); }
+  if (!maVaiTro) { showErr('edit-vaitro-err', 'Vui lòng chọn vai trò'); valid = false; }
+  else             { hideErr('edit-vaitro-err'); }
+  if (!valid) return;
+
+  const btn = document.getElementById('btn-submit-edit');
+  btn.disabled = true; btn.textContent = 'Đang lưu...';
+
+  try {
+    const resp = await fetch(`${BASE_URL}/api/employees/${_editMaNV}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ HoTen: hoTen, MaVaiTro: parseInt(maVaiTro) }),
+    });
+    const data = await resp.json();
+    if (resp.status === 200) {
+      closeEditModal();
+      showToast('Cập nhật nhân viên thành công', 'success');
+      await loadEmployees();
+    } else if (resp.status === 404) {
+      showToast('Không tìm thấy nhân viên', 'error');
+    } else {
+      showToast(data.message || 'Lỗi khi cập nhật', 'error');
+    }
+  } catch(e) {
+    showToast('Lỗi kết nối server', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Lưu thay đổi';
+  }
+}
+
+/* ============================================================
+   MODAL FACE
+============================================================ */
+function openFaceModal(maNV, hoTen) {
+  document.getElementById('modal-face-sub').textContent = `Nhân viên: ${hoTen} (MaNV: ${maNV})`;
+  openModal('modal-face');
+}
+function closeFaceModal() { closeModal('modal-face'); }
+
+/* ============================================================
+   FORM HELPERS
+============================================================ */
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; el.classList.add('show'); }
+}
+function hideErr(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('show');
+}
+
+/* ============================================================
+   MODAL: close on backdrop click / ESC (via ui.js)
+============================================================ */
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.modal-backdrop').forEach(bd => {
+    bd.addEventListener('backdropClose', () => { _editMaNV = null; });
+  });
+});
+
+/* ============================================================
+   INIT
+============================================================ */
+(async () => {
+  await loadRoles();
+  await loadEmployees();
+})();
+</script>
+
+</body>
+</html>

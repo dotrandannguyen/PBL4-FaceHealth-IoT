@@ -138,9 +138,10 @@ final class FaceEmbeddingModel
     public function findAllForInternalGallery(): array
     {
         $rows = Database::getConnection()->query(<<<'SQL'
-            SELECT MaNV, MaEmbedding, SoChieu, VectorData
-            FROM FaceEmbedding
-            ORDER BY MaNV, MaEmbedding
+            SELECT fe.MaNV, fe.MaEmbedding, fe.SoChieu, fe.VectorData, nv.HoTen
+            FROM FaceEmbedding fe
+            LEFT JOIN NhanVien nv ON fe.MaNV = nv.MaNV
+            ORDER BY fe.MaNV, fe.MaEmbedding
             SQL)->fetchAll();
 
         $embeddings = [];
@@ -153,6 +154,7 @@ final class FaceEmbeddingModel
 
             $embeddings[] = [
                 'ma_nv' => (int)$row['MaNV'],
+                'ho_ten' => (string)($row['HoTen'] ?? ('Nhân viên #' . $row['MaNV'])),
                 'ma_embedding' => (int)$row['MaEmbedding'],
                 'so_chieu' => $dimensions,
                 'vector' => base64_encode($vector),

@@ -15,6 +15,7 @@ import sys
 import time
 import json
 import enum
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 from collections import Counter
@@ -71,6 +72,7 @@ class UnifiedAttendanceEngine:
         self.snapshots_dir = self.logs_dir / "snapshots"
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_log_path = self.logs_dir / "attendance_logs.jsonl"
+        self.web_api_url: str = os.environ.get("PBL4_WEB_API", "http://localhost:8080/api/chamcong")
 
         # Khởi tạo AI 1 & AI 2
         print("[UnifiedEngine] Đang nạp mô hình AI 1 (InsightFace buffalo_sc)...")
@@ -543,7 +545,65 @@ class UnifiedAttendanceEngine:
         except Exception as e:
             print(f"[UnifiedEngine] Lỗi lưu log JSONL: {e}")
 
+        # 8. Đồng bộ kết quả chấm công sang Web Backend qua API (Background Thread)
+        best_img = self.evidence_frames[1] if self.evidence_frames[1] is not None else self.best_frame_bgr
+        threading.Thread(
+            target=self._sync_attendance_to_web,
+            args=(final_student_id, hr, spo2, ai2_final_status, best_img),
+            daemon=True,
+        ).start()
+
         return record
+
+    def _sync_attendance_to_web(
+        self,
+        student_id: str,
+        hr: int,
+        spo2: int,
+        ai2_status: str,
+        best_frame: Optional[np.ndarray],
+    ) -> None:
+        """Gửi kết quả điểm danh lên Web backend qua REST API."""
+        if not student_id or student_id == "Unknown":
+            return
+
+        # Trích xuất số ID (ví dụ SV001 -> 1, NV02 -> 2, 1 -> 1)
+        num_str = "".join(filter(str.isdigit, student_id))
+        if not num_str:
+            return
+        emp_id = int(num_str)
+
+        img_b64 = None
+        if best_frame is not None:
+            try:
+                ret, buf = cv2.imencode(".jpg", best_frame)
+                if ret:
+                    import base64
+                    img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+            except Exception:
+                pass
+
+        payload: Dict[str, Any] = {
+            "MaNV": emp_id,
+            "MaTB": 1,
+            "NhipTim": hr if hr > 0 else None,
+            "SpO2": float(spo2) if spo2 > 0 else None,
+            "TrangThai": ai2_status,
+            "image": img_b64,
+        }
+
+        try:
+            import requests
+            res = requests.post(self.web_api_url, json=payload, timeout=3.0)
+            if res.status_code == 200:
+                data = res.json()
+                msg = data.get("message", "Thành công")
+                print(f"[SyncWeb] ✅ Đã đồng bộ sang Web: {msg} (MaNV={emp_id})")
+            else:
+                print(f"[SyncWeb] ⚠️ Web trả về mã {res.status_code}: {res.text[:80]}")
+        except Exception as e:
+            # Không làm gián đoạn hệ thống nếu Web/Docker chưa mở
+            print(f"[SyncWeb] ℹ️ Chưa kết nối Web API ({self.web_api_url}): {e}")
 
     def close(self) -> None:
         """Đóng an toàn ThreadPool."""

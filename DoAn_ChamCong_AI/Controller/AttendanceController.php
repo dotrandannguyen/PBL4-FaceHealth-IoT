@@ -176,8 +176,31 @@ final class AttendanceController
             return;
         }
 
-        $image = $this->camera->captureJpeg();
+        $image = null;
+        if (!empty($data['image'])) {
+            $image = base64_decode((string)$data['image'], true) ?: null;
+        }
+        if ($image === null) {
+            $image = $this->camera->captureJpeg();
+        }
+
         $result = $this->service->process($employeeId, $deviceId, $image);
+
+        // Luu them chi so suc khoe vao DB neu duoc gui kem tu he thong IoT/AI
+        if (($result['status'] ?? '') === 'success') {
+            $hr = isset($data['NhipTim']) ? (int)$data['NhipTim'] : null;
+            $spo2 = isset($data['SpO2']) ? (float)$data['SpO2'] : null;
+            if ($hr !== null || $spo2 !== null) {
+                try {
+                    require_once __DIR__ . '/../Model/HealthModel.php';
+                    $healthModel = new HealthModel();
+                    $healthModel->insertRecord($employeeId, $hr, $spo2);
+                } catch (Throwable $e) {
+                    error_log('Health record insert failed: ' . $e->getMessage());
+                }
+            }
+        }
+
         $this->jsonResponse($result, ($result['status'] ?? 'error') === 'success' ? 200 : 400);
     }
 

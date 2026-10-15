@@ -3,7 +3,12 @@ declare(strict_types=1);
 
 final class AiClient
 {
-    private const BASE_URL = 'http://127.0.0.1:5001';
+    private string $baseUrl;
+
+    public function __construct(?string $baseUrl = null)
+    {
+        $this->baseUrl = rtrim($baseUrl ?? (getenv('AI_SERVICE_URL') ?: 'http://127.0.0.1:5001'), '/');
+    }
 
     /** Đọc trạng thái AI service nội bộ, không khởi chạy process Python mới. */
     public function health(): array
@@ -40,7 +45,7 @@ final class AiClient
                 'ignore_errors' => true,
             ],
         ]);
-        $body = @file_get_contents(self::BASE_URL . $path, false, $context);
+        $body = @file_get_contents($this->baseUrl . $path, false, $context);
         if (!is_string($body)) {
             throw new RuntimeException('AI service is unavailable.');
         }
@@ -68,7 +73,7 @@ final class AiClient
                 'ignore_errors' => true,
             ],
         ]);
-        $body = @file_get_contents(self::BASE_URL . $path, false, $context);
+        $body = @file_get_contents($this->baseUrl . $path, false, $context);
         if (!is_string($body)) {
             throw new RuntimeException('AI service is unavailable.');
         }

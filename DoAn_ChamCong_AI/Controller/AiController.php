@@ -33,7 +33,20 @@ final class AiController
 
     private function isLoopbackRequest(): bool
     {
-        return in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1', '::ffff:127.0.0.1'], true);
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        if (in_array($ip, ['127.0.0.1', '::1', '::ffff:127.0.0.1'], true)) {
+            return true;
+        }
+        // Cho phep moi IP private (Docker bridge 172.x, LAN 192.168.x, 10.x)
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
     }
 
+    private function jsonResponse(array $payload, int $status = 200): void
+    {
+        http_response_code($status);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: private, no-store');
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }

@@ -67,6 +67,20 @@ final class HealthModel
         return array_reverse($statement->fetchAll());
     }
 
+    public function insertRecord(int $employeeId, ?int $hr, ?float $spo2): int
+    {
+        $statement = Database::getConnection()->prepare(<<<'SQL'
+            INSERT INTO LichSuSucKhoe (MaNV, NhipTim, SpO2, ThoiGian)
+            VALUES (:employee_id, :hr, :spo2, CURRENT_TIMESTAMP(3))
+            SQL);
+        $statement->bindValue(':employee_id', $employeeId, PDO::PARAM_INT);
+        $statement->bindValue(':hr', $hr, $hr === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $statement->bindValue(':spo2', $spo2, $spo2 === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $statement->execute();
+
+        return (int)Database::getConnection()->lastInsertId();
+    }
+
     private function historyFilterSql(array $filters): array
     {
         $where = [];

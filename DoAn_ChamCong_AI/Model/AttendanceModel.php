@@ -188,6 +188,29 @@ final class AttendanceModel
         return $shift === false ? null : $shift;
     }
 
+    public function findDefaultActiveShift(): ?array
+    {
+        $statement = Database::getConnection()->query(<<<'SQL'
+            SELECT MaCa, TenCa, GioBatDau, GioKetThuc
+            FROM CaLamViec
+            WHERE TrangThai = 1
+            ORDER BY MaCa ASC
+            LIMIT 1
+            SQL);
+        $shift = $statement->fetch();
+
+        return $shift === false ? null : $shift;
+    }
+
+    public function ensureEmployee(int $employeeId, string $defaultName = 'Nhân viên'): void
+    {
+        $statement = Database::getConnection()->prepare(<<<'SQL'
+            INSERT IGNORE INTO NhanVien (MaNV, HoTen, MaVaiTro)
+            VALUES (:employee_id, :name, 2)
+            SQL);
+        $statement->execute(['employee_id' => $employeeId, 'name' => $defaultName]);
+    }
+
     public function findTodayRecord(int $employeeId, string $date): ?array
     {
         $statement = Database::getConnection()->prepare(<<<'SQL'

@@ -1,0 +1,57 @@
+services:
+  mariadb:
+    image: mariadb:10.11
+    container_name: pbl4_mariadb
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: DoAn_ChamCong_AI_MariaDB
+      MYSQL_USER: pbl4_user
+      MYSQL_PASSWORD: pbl4_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./DoAn_ChamCong_AI/migration/mariadb_schema.sql:/docker-entrypoint-initdb.d/00_schema.sql:ro
+      - ./DoAn_ChamCong_AI/migration/01_seed_init.sql:/docker-entrypoint-initdb.d/01_seed.sql:ro
+    networks:
+      - pbl4_net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: ./DoAn_ChamCong_AI
+      dockerfile: Dockerfile
+    container_name: pbl4_web
+    restart: always
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    environment:
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: 3306
+      MARIADB_DATABASE: DoAn_ChamCong_AI_MariaDB
+      MARIADB_USER: pbl4_user
+      MARIADB_PASSWORD: pbl4_password
+      PYTHON_EXECUTABLE: /usr/bin/python3
+      AI_SERVICE_URL: http://host.docker.internal:5001
+      CAMERA_FRAME_URL: http://host.docker.internal:5001/internal/camera/frame
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./DoAn_ChamCong_AI:/var/www/html
+    networks:
+      - pbl4_net
+
+networks:
+  pbl4_net:
+    driver: bridge
+
+volumes:
+  mariadb_data:

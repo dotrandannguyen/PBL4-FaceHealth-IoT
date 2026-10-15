@@ -26,13 +26,16 @@ final class AttendanceService
 
         try {
             if (!$this->attendance->employeeExists($employeeId)) {
-                return $this->finish($pdo, $ownsTransaction, $this->error('Không tìm thấy nhân viên'));
+                $this->attendance->ensureEmployee($employeeId, "Nhân viên #{$employeeId}");
             }
 
             $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Ho_Chi_Minh')))->format('Y-m-d');
             $shift = $this->attendance->findEmployeeShift($employeeId, $today);
             if ($shift === null) {
-                return $this->finish($pdo, $ownsTransaction, $this->error('Nhân viên chưa được phân ca hôm nay'));
+                $shift = $this->attendance->findDefaultActiveShift();
+            }
+            if ($shift === null) {
+                return $this->finish($pdo, $ownsTransaction, $this->error('Không tìm thấy ca làm việc khả dụng'));
             }
 
             $todayRecord = $this->attendance->findTodayRecord($employeeId, $today);

@@ -29,6 +29,7 @@ COMMANDS_HELP = {
     "verify":          "Xác minh 1:1 (ảnh hoặc webcam)",
     "identify":        "Nhận dạng 1:N trong toàn bộ DB",
     "capture":         "Thu ảnh từ webcam vào dataset",
+    "train":           "Huấn luyện lại model Random Forest từ dataset",
     "evaluate":        "Đánh giá ngưỡng FAR/FRR/EER",
 }
 
@@ -92,6 +93,12 @@ if __name__ == "__main__":
         sys.argv = ["evaluate"] + rest
         import runpy
         runpy.run_path(str(Path(__file__).parent / "src" / "evaluate.py"), run_name="__main__")
+
+    # ── train ─────────────────────────────────────────────────────────────────
+    elif command == "train":
+        sys.argv = ["train"] + rest
+        import runpy
+        runpy.run_path(str(Path(__file__).parent / "src" / "train_rf.py"), run_name="__main__")
 
     else:
         console.print(f"[red]❌ Lệnh không hợp lệ: '{command}'[/]")

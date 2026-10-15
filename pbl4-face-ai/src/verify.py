@@ -36,15 +36,22 @@ EMBEDDINGS_PATH = Path(__file__).parent.parent / "data" / "embeddings.pkl"
 # Ngưỡng mặc định — sẽ tinh chỉnh ở Bước 4
 DEFAULT_THRESHOLD = 0.45
 
+# Cache DB trong memory để tránh đọc file pkl mỗi lần gọi
+_DB_CACHE: dict | None = None
+
 
 # ─── Load DB ──────────────────────────────────────────────────────────────────
-def load_db() -> dict:
+def load_db(force_reload: bool = False) -> dict:
+    global _DB_CACHE
+    if _DB_CACHE is not None and not force_reload:
+        return _DB_CACHE
     if not EMBEDDINGS_PATH.exists():
         console.print(f"[red]❌ Không tìm thấy database: {EMBEDDINGS_PATH}[/]")
         console.print("[yellow]→ Hãy đăng ký sinh viên trước bằng register.py[/]")
         return {}
     with open(EMBEDDINGS_PATH, "rb") as f:
-        return pickle.load(f)
+        _DB_CACHE = pickle.load(f)
+    return _DB_CACHE
 
 
 # ─── Xác minh 1:1 ────────────────────────────────────────────────────────────

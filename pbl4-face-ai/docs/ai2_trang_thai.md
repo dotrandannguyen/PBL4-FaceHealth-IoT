@@ -69,8 +69,12 @@
 
 ## 4. Danh mục File triển khai
 
-- **`src/status_features.py`**: Trích xuất tọa độ landmark MediaPipe, tính EAR, MAR, Head Pose.
+- **`src/status_features.py`**: Trích xuất tọa độ landmark MediaPipe, tính EAR, MAR, Head Pose (solvePnP).
 - **`scripts/collect_status.py`**: Giao diện thu thập mẫu dữ liệu chuẩn 3 nhãn (`Normal`, `Fatigue`, `Exhausted`) với gợi ý thời gian thực.
-- **`src/train_rf.py`**: Huấn luyện Random Forest với dữ liệu 3 nhãn từ file CSV, xuất mô hình `data/rf_status_model.pkl`.
-- **`src/predict_status.py`**: Module dự đoán trạng thái từ 3 khung hình liên tiếp.
+- **`src/train_rf.py`**: Huấn luyện Random Forest với dữ liệu 3 nhãn từ file CSV, xuất mô hình `data/rf_status_model.pkl` và xếp hạng Feature Importances.
+- **`src/predict_status.py`**: Module dự đoán trạng thái nâng cao:
+  - Hỗ trợ **Streaming Buffer**: Trích xuất MediaPipe 1 lần duy nhất mỗi frame (giảm tải 3x CPU).
+  - **Làm mịn nhãn (Temporal Smoothing)**: Khử hiện tượng nhảy nhãn tức thời khi chớp mắt sinh lý.
+  - **Lọc góc quay mặt (Head Pose Filter)**: Phát hiện người dùng quay đầu ngoảnh mặt ($|Yaw| > 25^\circ$) để tránh nhận diện sai độ mở mắt.
 - **`gui.py`**: Giao diện tích hợp đầy đủ các chức năng thu thập, huấn luyện và kiểm thử.
+

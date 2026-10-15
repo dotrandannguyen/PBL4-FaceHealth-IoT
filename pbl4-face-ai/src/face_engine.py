@@ -54,16 +54,17 @@ class FaceEngine:
         console.print("[bold green]✅ InsightFace sẵn sàng![/]")
 
     # ── Detect ────────────────────────────────────────────────────────────────
-    def detect(self, image: np.ndarray) -> list:
+    def detect(self, image: np.ndarray, min_score: float = 0.5) -> list:
         """
         Phát hiện tất cả khuôn mặt trong ảnh.
         Args:
-            image: BGR numpy array (OpenCV format)
+            image:     BGR numpy array (OpenCV format)
+            min_score: Ngưỡng confidence tối thiểu (mặc định 0.5)
         Returns:
             list[Face] — mỗi Face có .bbox, .kps, .embedding, .det_score
         """
         faces = self.app.get(image)
-        return faces
+        return [f for f in faces if f.det_score >= min_score]
 
     # ── Embed ─────────────────────────────────────────────────────────────────
     def embed(self, image: np.ndarray) -> np.ndarray | None:

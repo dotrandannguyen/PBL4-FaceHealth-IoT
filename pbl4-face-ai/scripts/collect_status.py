@@ -14,7 +14,8 @@ if sys.platform == "win32":
 
 # Thêm src vào sys.path để import status_features
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from status_features import StatusFeatureExtractor
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.status_features import StatusFeatureExtractor
 
 # Thư mục lưu dữ liệu
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -154,7 +155,7 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif chr(key) in LABELS.keys():
+        elif key in [ord(k) for k in LABELS.keys()]:
             current_label = LABELS[chr(key)]
             collecting = True
             frame_buffer.clear()
@@ -174,6 +175,22 @@ def main():
         else:
             df.to_csv(CSV_FILE, index=False)
             print(f"\n💾 Đã lưu dataset mới với {len(dataset)} dòng vào {CSV_FILE}")
+
+        # Tự động huấn luyện mô hình ngay sau khi thu thập
+        print("\n" + "="*60)
+        print("🧠 TỰ ĐỘNG HUẤN LUYỆN LẠI RANDOM FOREST (AI 2)...")
+        print("="*60)
+        try:
+            from train_rf import main as train_main
+            train_main()
+        except ImportError:
+            try:
+                from src.train_rf import main as train_main
+                train_main()
+            except Exception as e:
+                print(f"❌ Lỗi khi tự động train: {e}")
+        except Exception as e:
+            print(f"❌ Lỗi khi tự động train: {e}")
     else:
         print("\n❌ Chưa có dữ liệu nào được thu thập.")
 

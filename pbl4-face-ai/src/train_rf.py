@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, classification_report
 import joblib
 from pathlib import Path
 from rich.console import Console
+from rich.table import Table
 
 if sys.platform == "win32":
     try:
@@ -59,6 +60,20 @@ def main():
     if len(y_test) > 2:
         console.print("\n[bold]Báo cáo chi tiết từng nhãn:[/bold]")
         print(classification_report(y_test, y_pred, zero_division=0))
+
+    # Bảng xếp hạng mức độ quan trọng của các đặc trưng (Feature Importances)
+    importances = rf_model.feature_importances_
+    feat_names = X.columns
+    sorted_idx = importances.argsort()[::-1]
+
+    table = Table(title="Xếp hạng đặc trưng quan trọng (Feature Importances)")
+    table.add_column("Hạng", justify="center", style="cyan")
+    table.add_column("Tên đặc trưng", style="bold")
+    table.add_column("Tỷ trọng (%)", justify="right", style="green")
+
+    for rank, idx in enumerate(sorted_idx, 1):
+        table.add_row(str(rank), feat_names[idx], f"{importances[idx] * 100:.2f}%")
+    console.print(table)
 
     # Lưu model nhị phân PKL
     joblib.dump(rf_model, MODEL_FILE)

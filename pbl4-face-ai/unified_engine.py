@@ -10,6 +10,7 @@ Kiến trúc:
   - Ma trận hợp nhất quyết định (Late Fusion Decision Matrix) 7 mức ưu tiên.
 """
 
+import os
 import sys
 import time
 import json
@@ -18,6 +19,10 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, Future
+
+# Tắt cảnh báo C++ của TensorFlow/MediaPipe ghi vào STDERR làm đỏ console
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("GLOG_minloglevel", "3")
 
 import cv2
 import numpy as np
@@ -55,6 +60,7 @@ class UnifiedAttendanceEngine:
     COMPLETED_DISPLAY_SEC = 3.0 # Giữ màn hình kết quả trước khi về IDLE
     ABORTED_DISPLAY_SEC = 2.5   # Giữ màn hình lỗi trước khi về IDLE
     HARD_TIMEOUT_SEC = 7.0      # Giới hạn thời gian tối đa của 1 phiên
+    MAX_EVIDENCE_FRAMES = 3     # Số ảnh bằng chứng tối đa lưu mỗi phiên
 
     def __init__(
         self,
@@ -93,6 +99,9 @@ class UnifiedAttendanceEngine:
         self.latest_face_metrics: Dict[str, float] = {
             "ear": 0.0, "mar": 0.0, "pitch": 0.0, "yaw": 0.0, "sharpness": 0.0
         }
+        # Bộ đệm 3 ảnh bằng chứng: [frame_đầu_scanning, frame_best_quality, frame_cuối]
+        self.evidence_frames: List[Optional[np.ndarray]] = [None, None, None]
+        self._evidence_start_saved: bool = False  # Đã lưu frame đầu SCANNING chưa
 
         # Kết quả AI 1 trong phiên
         self.identified_id: Optional[str] = None
@@ -125,6 +134,8 @@ class UnifiedAttendanceEngine:
         self.session_status_history.clear()
         self.best_frame_score = -1.0
         self.best_frame_bgr = None
+        self.evidence_frames = [None, None, None]
+        self._evidence_start_saved = False
         self.identified_id = None
         self.identified_name = "Scanning Identity..."
         self.identity_sim = 0.0
@@ -238,6 +249,13 @@ class UnifiedAttendanceEngine:
                 "abort_reason": "",
             }
 
+        # Ghi nhận frame đầu & frame cuối của SCANNING (kể cả khi landmark chưa kịp lock)
+        if self.state == SessionState.SCANNING:
+            if not self._evidence_start_saved:
+                self.evidence_frames[0] = frame_bgr.copy()
+                self._evidence_start_saved = True
+            self.evidence_frames[2] = frame_bgr.copy()
+
         # Trạng thái WARMUP hoặc SCANNING: Chạy MediaPipe trích xuất cử động
         ai2_res = self.status_predictor.predict_frame(frame_bgr)
         pts = ai2_res.get("pts")
@@ -286,6 +304,8 @@ class UnifiedAttendanceEngine:
                 if self.best_frame_bgr is None or quality_score > self.best_frame_score:
                     self.best_frame_score = quality_score
                     self.best_frame_bgr = frame_bgr.copy()
+                    # evidence_frames[1] = frame best-quality (cập nhật liên tục khi có mặt chất lượng cao)
+                    self.evidence_frames[1] = frame_bgr.copy()
 
                 # 3. Kích hoạt Worker AI 1 liên tục trong SCANNING khi Worker đang rảnh
                 # Không chặn cứng độ nét 45 (vì webcam laptop trong phòng thường chỉ đạt 15-30)
@@ -337,6 +357,8 @@ class UnifiedAttendanceEngine:
         self.session_status_history.clear()
         self.best_frame_score = -1.0
         self.best_frame_bgr = None
+        self.evidence_frames = [None, None, None]
+        self._evidence_start_saved = False
         self.abort_reason = ""
         self.status_predictor.reset()
         print("[UnifiedEngine] 💤 Trở về IDLE. Sẵn sàng cho phiên tiếp theo.")
@@ -445,15 +467,42 @@ class UnifiedAttendanceEngine:
             alert_level = "YELLOW"
             recommendation = "Camera không bắt đủ góc mặt chuẩn, chỉ ghi nhận chỉ số sinh trắc học."
 
-        # 5. Lưu snapshot ảnh chất lượng cao nhất của phiên
+        # 5. Lưu 3 ảnh bằng chứng chấm công
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
         ts_filename = time.strftime("%Y%m%d_%H%M%S")
-        snapshot_filename = f"{final_student_id}_{ts_filename}.jpg"
-        snapshot_path = self.snapshots_dir / snapshot_filename
 
-        if self.best_frame_bgr is not None:
-            cv2.imwrite(str(snapshot_path), self.best_frame_bgr)
-        relative_snapshot_path = f"logs/snapshots/{snapshot_filename}"
+        # Tên 3 ảnh: _start (đầu scanning), _best (chất lượng cao nhất), _end (cuối phiên)
+        evidence_labels = ["start", "best", "end"]
+        evidence_paths: List[str] = []
+
+        # evidence_frames[1] (best) có thể là best_frame_bgr
+        if self.evidence_frames[1] is None and self.best_frame_bgr is not None:
+            self.evidence_frames[1] = self.best_frame_bgr
+
+        # Fallback: nếu frame nào None thì mượn từ frame có sẵn (best -> start -> end)
+        fallback_frame = (
+            self.best_frame_bgr
+            if self.best_frame_bgr is not None
+            else (self.evidence_frames[0] if self.evidence_frames[0] is not None else self.evidence_frames[2])
+        )
+        for i in range(3):
+            if self.evidence_frames[i] is None and fallback_frame is not None:
+                self.evidence_frames[i] = fallback_frame
+
+        for idx, (label, ev_frame) in enumerate(zip(evidence_labels, self.evidence_frames)):
+            filename = f"{final_student_id}_{ts_filename}_{label}.jpg"
+            rel_path = f"logs/snapshots/{filename}"
+            if ev_frame is not None:
+                abs_path = self.snapshots_dir / filename
+                cv2.imwrite(str(abs_path), ev_frame)
+                evidence_paths.append(rel_path)
+            else:
+                evidence_paths.append("")  # Frame không có thì để rỗng
+
+        # Tương thích ngược: snapshot_path = ảnh best (index 1)
+        snapshot_path_compat = evidence_paths[1] if len(evidence_paths) > 1 else ""
+
+        print(f"[UnifiedEngine] 📸 Đã lưu {sum(1 for p in evidence_paths if p)} ảnh bằng chứng")
 
         # 6. Tạo gói JSON Output chuẩn
         record: Dict[str, Any] = {
@@ -480,7 +529,10 @@ class UnifiedAttendanceEngine:
                 "alert_level": alert_level,
                 "recommendation": recommendation,
             },
-            "snapshot_path": relative_snapshot_path,
+            # 3 ảnh bằng chứng: [start, best, end]
+            "evidence_snapshots": evidence_paths,
+            # Tương thích ngược
+            "snapshot_path": snapshot_path_compat,
         }
 
         # 7. Ghi append vào file JSONL

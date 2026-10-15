@@ -33,6 +33,9 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("GLOG_minloglevel", "3")
+
 import cv2
 import numpy as np
 

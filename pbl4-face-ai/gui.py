@@ -130,13 +130,7 @@ class FaceAIDashboard(tk.Tk):
             self.tree.insert("", "end", values=(u["id"], u["name"]))
 
     def handle_register(self):
-        sv_id = self.entry_id.get().strip()
-        sv_name = self.entry_name.get().strip()
-        if not sv_id or not sv_name:
-            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập Mã Sinh Viên và Tên trước khi đăng ký!")
-            return
-        run_cmd([PYTHON_CMD, "main.py", "register", "webcam", "--id", sv_id, "--name", sv_name], "Đăng ký")
-        messagebox.showinfo("Lưu ý", "Sau khi đăng ký xong qua Webcam, hãy bấm 'Làm mới danh sách' để xem kết quả nhé.")
+        run_cmd([PYTHON_CMD, "gui_register.py"], "Đăng ký Khuôn mặt")
 
     def handle_attendance(self):
         run_cmd([PYTHON_CMD, "demo_unified_iot.py"], "Chấm công Thông minh")

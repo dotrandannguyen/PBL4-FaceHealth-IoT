@@ -175,6 +175,22 @@ def main():
         else:
             df.to_csv(CSV_FILE, index=False)
             print(f"\n💾 Đã lưu dataset mới với {len(dataset)} dòng vào {CSV_FILE}")
+
+        # Tự động huấn luyện mô hình ngay sau khi thu thập
+        print("\n" + "="*60)
+        print("🧠 TỰ ĐỘNG HUẤN LUYỆN LẠI RANDOM FOREST (AI 2)...")
+        print("="*60)
+        try:
+            from train_rf import main as train_main
+            train_main()
+        except ImportError:
+            try:
+                from src.train_rf import main as train_main
+                train_main()
+            except Exception as e:
+                print(f"❌ Lỗi khi tự động train: {e}")
+        except Exception as e:
+            print(f"❌ Lỗi khi tự động train: {e}")
     else:
         print("\n❌ Chưa có dữ liệu nào được thu thập.")
 

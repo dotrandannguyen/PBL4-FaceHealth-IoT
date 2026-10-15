@@ -6,12 +6,14 @@ import pickle
 import threading
 from pathlib import Path
 
+import sys
 # Đường dẫn Python và môi trường
-PYTHON_CMD = r".\.venv\Scripts\python.exe"
+PYTHON_CMD = sys.executable if sys.executable else r".\.venv\Scripts\python.exe"
 ENV = os.environ.copy()
 ENV["PYTHONIOENCODING"] = "utf-8"
 
-DB_PATH = Path("data/embeddings.pkl")
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "data" / "embeddings.pkl"
 
 def run_cmd(cmd_list, title=""):
     try:
@@ -137,7 +139,7 @@ class FaceAIDashboard(tk.Tk):
         messagebox.showinfo("Lưu ý", "Sau khi đăng ký xong qua Webcam, hãy bấm 'Làm mới danh sách' để xem kết quả nhé.")
 
     def handle_attendance(self):
-        run_cmd([PYTHON_CMD, "main.py", "identify", "--webcam"], "Chấm công")
+        run_cmd([PYTHON_CMD, "demo_unified_iot.py"], "Chấm công Thông minh")
 
     def handle_train_status(self):
         msg = (

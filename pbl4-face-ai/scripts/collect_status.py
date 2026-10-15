@@ -14,7 +14,8 @@ if sys.platform == "win32":
 
 # Thêm src vào sys.path để import status_features
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from status_features import StatusFeatureExtractor
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.status_features import StatusFeatureExtractor
 
 # Thư mục lưu dữ liệu
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -154,7 +155,7 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif chr(key) in LABELS.keys():
+        elif key in [ord(k) for k in LABELS.keys()]:
             current_label = LABELS[chr(key)]
             collecting = True
             frame_buffer.clear()

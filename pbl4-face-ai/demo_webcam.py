@@ -94,11 +94,11 @@ def main():
         # HUD - thông tin góc trên
         hud_bg = vis.copy()
         cv2.rectangle(hud_bg, (0, 0), (380, 80), (0, 0, 0), -1)
-        vis = cv2.addWeighted(vis, 1, hud_bg, 0.5, 0)
+        vis = cv2.addWeighted(hud_bg, 0.5, vis, 1.0, 0)
 
         cv2.putText(vis, f"PBL4 Face Detection | FPS: {fps:.1f}",
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2)
-        cv2.putText(vis, f"Model: buffalo_l | Faces: {len(faces)}",
+        cv2.putText(vis, f"Model: buffalo_sc | Faces: {len(faces)}",
                     (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         cv2.putText(vis, "Q = Thoat",
                     (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 100, 255), 1)

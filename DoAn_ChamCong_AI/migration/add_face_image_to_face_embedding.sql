@@ -1,0 +1,2 @@
+ALTER TABLE `FaceEmbedding`
+    ADD COLUMN IF NOT EXISTS `AnhKhuonMat` LONGBLOB NULL AFTER `VectorData`;

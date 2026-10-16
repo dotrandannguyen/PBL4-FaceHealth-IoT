@@ -5,6 +5,7 @@ require_once __DIR__ . '/../Model/AttendanceModel.php';
 require_once __DIR__ . '/AuthController.php';
 require_once __DIR__ . '/../Service/AttendanceService.php';
 require_once __DIR__ . '/../Service/CameraFrameClient.php';
+require_once __DIR__ . '/../Security/CsrfToken.php';
 
 final class AttendanceController
 {
@@ -23,6 +24,7 @@ final class AttendanceController
     public function index(): void
     {
         AuthController::requireAdmin();
+        $csrfToken = CsrfToken::token();
 
         $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Ho_Chi_Minh')))->format('Y-m-d');
         $fromDate = trim((string)($_GET['from_date'] ?? $today));
@@ -184,7 +186,18 @@ final class AttendanceController
             $image = $this->camera->captureJpeg();
         }
 
-        $result = $this->service->process($employeeId, $deviceId, $image);
+        $rawStatus = (string)($data['TrangThai'] ?? 'Normal');
+        $statusLabel = 'Bình thường';
+        $maBieuHien = 1;
+        if (stripos($rawStatus, 'Exhaust') !== false || stripos($rawStatus, 'Kiệt') !== false) {
+            $statusLabel = 'Kiệt sức';
+            $maBieuHien = 3;
+        } elseif (stripos($rawStatus, 'Fatigue') !== false || stripos($rawStatus, 'Mệt') !== false) {
+            $statusLabel = 'Mệt mỏi';
+            $maBieuHien = 2;
+        }
+
+        $result = $this->service->process($employeeId, $deviceId, $image, $statusLabel);
 
         // Luu them chi so suc khoe vao DB neu duoc gui kem tu he thong IoT/AI
         if (($result['status'] ?? '') === 'success') {
@@ -194,14 +207,66 @@ final class AttendanceController
                 try {
                     require_once __DIR__ . '/../Model/HealthModel.php';
                     $healthModel = new HealthModel();
-                    $healthModel->insertRecord($employeeId, $hr, $spo2);
+                    $healthModel->insertRecord($employeeId, $hr, $spo2, $statusLabel);
                 } catch (Throwable $e) {
                     error_log('Health record insert failed: ' . $e->getMessage());
                 }
             }
+
+            // Ghi nhan lich su trang thai va canh bao neu co
+            try {
+                $pdo = Database::getConnection();
+                $stmtTT = $pdo->prepare('INSERT INTO LichSuTrangThai (MaNV, MaBieuHien, ThoiGian) VALUES (:emp, :bh, CURRENT_TIMESTAMP(3))');
+                $stmtTT->execute(['emp' => $employeeId, 'bh' => $maBieuHien]);
+                $maTT = (int)$pdo->lastInsertId();
+
+                if ($maBieuHien === 3) {
+                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 2, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
+                        ->execute(['emp' => $employeeId, 'msg' => 'Kiệt sức / Buồn ngủ sâu khi chấm công', 'tt' => $maTT, 'tb' => $deviceId]);
+                } elseif ($maBieuHien === 2) {
+                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 2, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
+                        ->execute(['emp' => $employeeId, 'msg' => 'Phát hiện thể trạng mệt mỏi khi chấm công', 'tt' => $maTT, 'tb' => $deviceId]);
+                }
+
+                if ($spo2 !== null && $spo2 < 95.0) {
+                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 1, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
+                        ->execute(['emp' => $employeeId, 'msg' => "Nồng độ oxy SpO2 thấp bất thường ({$spo2}%)", 'tt' => $maTT, 'tb' => $deviceId]);
+                }
+                if ($hr !== null && ($hr > 110 || $hr < 50)) {
+                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 1, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
+                        ->execute(['emp' => $employeeId, 'msg' => "Nhịp tim bất thường ({$hr} BPM)", 'tt' => $maTT, 'tb' => $deviceId]);
+                }
+            } catch (Throwable $e) {
+                error_log('Alert/Status insert failed: ' . $e->getMessage());
+            }
         }
 
-        $this->jsonResponse($result, ($result['status'] ?? 'error') === 'success' ? 200 : 400);
+        $this->jsonResponse($result, in_array($result['status'] ?? '', ['success', 'completed'], true) ? 200 : 400);
+    }
+
+    /** Xóa một phiên chấm công (chỉ Admin). */
+    public function delete(): void
+    {
+        AuthController::requireAdmin();
+        if (!CsrfToken::isValid()) {
+            http_response_code(400);
+            exit('Yêu cầu không hợp lệ.');
+        }
+
+        $id = filter_var($_POST['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (is_int($id)) {
+            $this->attendance->deleteAttendance($id);
+            $_SESSION['attendance_success'] = "Đã xóa phiên chấm công #{$id} thành công.";
+        } else {
+            $_SESSION['attendance_error'] = 'Mã chấm công không hợp lệ.';
+        }
+
+        $redirectUrl = '/?action=attendance';
+        if (!empty($_POST['return_query'])) {
+            $redirectUrl .= '&' . ltrim((string)$_POST['return_query'], '?&');
+        }
+        header('Location: ' . $redirectUrl, true, 303);
+        exit;
     }
 
     private function calculateStatuses(?string $shiftStart, ?string $shiftEnd, ?string $checkIn, ?string $checkOut): array

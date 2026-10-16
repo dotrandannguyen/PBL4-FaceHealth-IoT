@@ -58,7 +58,7 @@ class UnifiedAttendanceEngine:
     """
 
     WARMUP_DURATION = 1.2      # Giây khởi động ổn định vị trí & tín hiệu ngón tay
-    COMPLETED_DISPLAY_SEC = 3.0 # Giữ màn hình kết quả trước khi về IDLE
+    COMPLETED_DISPLAY_SEC = 5.0 # Giữ màn hình kết quả 5 giây trước khi về IDLE
     ABORTED_DISPLAY_SEC = 2.5   # Giữ màn hình lỗi trước khi về IDLE
     HARD_TIMEOUT_SEC = 7.0      # Giới hạn thời gian tối đa của 1 phiên
     MAX_EVIDENCE_FRAMES = 3     # Số ảnh bằng chứng tối đa lưu mỗi phiên
@@ -435,39 +435,39 @@ class UnifiedAttendanceEngine:
 
         # 4. Ma trận Hợp nhất Quyết định (Late Fusion Decision Matrix)
         if bio_level == "Bio_Danger":
-            final_status = "CẢNH BÁO Y TẾ (Medical Alert)"
+            final_status = "Cảnh báo y tế"
             alert_level = "RED"
-            recommendation = "Chỉ số tim mạch/SpO2 bất thường. Cần nghỉ ngơi kiểm tra y tế ngay!"
+            recommendation = "Chỉ số tim mạch hoặc SpO2 bất thường. Cần nghỉ ngơi kiểm tra y tế ngay!"
 
         elif ai2_final_status == "Exhausted":
-            final_status = "KIỆT SỨC / NGỦ GẬT (Exhausted)"
+            final_status = "Kiệt sức / Buồn ngủ nặng"
             alert_level = "RED"
-            recommendation = "Mắt nhắm nghiền hoặc gật gù nặng. Không đảm bảo an toàn học tập/làm việc."
+            recommendation = "Mắt nhắm nghiền hoặc gật gù liên tục. Cần nghỉ ngơi để đảm bảo an toàn."
 
         elif ai2_final_status == "Fatigue" and bio_level == "Bio_Warning":
-            final_status = "MỆT MỎI THỂ CHẤT (Physical Fatigue)"
+            final_status = "Mệt mỏi thể chất"
             alert_level = "ORANGE"
-            recommendation = "Có cả biểu hiện lờ đờ trên mặt lẫn nhịp tim/SpO2 suy giảm nhẹ."
+            recommendation = "Có biểu hiện lờ đờ trên mặt và nhịp tim/SpO2 hơi bất thường."
 
         elif ai2_final_status == "Fatigue" and bio_level in ["Bio_Normal", "Bio_Missing"]:
-            final_status = "BUỒN NGỦ / THIẾU NGỦ (Drowsy)"
+            final_status = "Buồn ngủ / Thiếu ngủ"
             alert_level = "YELLOW"
-            recommendation = "Chỉ số sinh tồn ổn định nhưng mắt/cơ mặt mỏi. Khuyến nghị rửa mặt tỉnh táo."
+            recommendation = "Chỉ số sinh tồn ổn định nhưng cơ mặt mệt mỏi. Khuyến nghị rửa mặt nghỉ giải lao."
 
         elif ai2_final_status == "Normal" and bio_level == "Bio_Warning":
-            final_status = "TỈNH TÁO - TIM ĐẬP NHANH (Active/Stressed)"
+            final_status = "Tỉnh táo / Căng thẳng nhẹ"
             alert_level = "YELLOW"
-            recommendation = "Khuôn mặt tỉnh táo nhưng nhịp tim hơi cao (có thể vừa đi bộ nhanh hoặc căng thẳng)."
+            recommendation = "Khuôn mặt tỉnh táo, nhịp tim hơi cao (có thể do vừa vận động hoặc căng thẳng)."
 
         elif ai2_final_status == "Normal" and bio_level in ["Bio_Normal", "Bio_Missing"]:
-            final_status = "ĐẠT CHUẨN (Fit to Study/Work)"
+            final_status = "Đạt chuẩn sức khỏe"
             alert_level = "GREEN"
-            recommendation = "Trạng thái tinh thần và thể chất hoàn toàn ổn định."
+            recommendation = "Trạng thái tinh thần và chỉ số sinh tồn hoàn toàn ổn định."
 
         else:
-            final_status = f"CHƯA RÕ MẶT ({bio_level})"
+            final_status = "Đang đánh giá"
             alert_level = "YELLOW"
-            recommendation = "Camera không bắt đủ góc mặt chuẩn, chỉ ghi nhận chỉ số sinh trắc học."
+            recommendation = "Camera chưa bắt đủ góc mặt chuẩn, ghi nhận theo chỉ số sinh trắc học."
 
         # 5. Lưu 3 ảnh bằng chứng chấm công
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -545,13 +545,24 @@ class UnifiedAttendanceEngine:
         except Exception as e:
             print(f"[UnifiedEngine] Lỗi lưu log JSONL: {e}")
 
-        # 8. Đồng bộ kết quả chấm công sang Web Backend qua API (Background Thread)
+        # 8. Đồng bộ kết quả chấm công sang Web Backend qua API
         best_img = self.evidence_frames[1] if self.evidence_frames[1] is not None else self.best_frame_bgr
-        threading.Thread(
-            target=self._sync_attendance_to_web,
-            args=(final_student_id, hr, spo2, ai2_final_status, best_img),
-            daemon=True,
-        ).start()
+        web_res = self._sync_attendance_to_web(final_student_id, hr, spo2, ai2_final_status, best_img)
+        act = web_res.get("action", "")
+        msg = web_res.get("message", "")
+        if act == "checkin":
+            record["attendance_action"] = "CHECK-IN"
+            record["attendance_msg"] = "Điểm danh vào ca thành công"
+        elif act == "checkout":
+            record["attendance_action"] = "CHECK-OUT"
+            record["attendance_msg"] = "Điểm danh ra về thành công"
+        elif act == "completed":
+            record["attendance_action"] = "DA_CHECK_OUT"
+            record["attendance_msg"] = "Hôm nay bạn đã hoàn thành ca làm việc"
+        else:
+            record["attendance_action"] = "CHAM_CONG"
+            record["attendance_msg"] = msg or "Đã ghi nhận"
+        record["web_result"] = web_res
 
         return record
 
@@ -562,15 +573,15 @@ class UnifiedAttendanceEngine:
         spo2: int,
         ai2_status: str,
         best_frame: Optional[np.ndarray],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Gửi kết quả điểm danh lên Web backend qua REST API."""
         if not student_id or student_id == "Unknown":
-            return
+            return {"action": "none", "status": "no_identity", "message": "Chưa xác định danh tính"}
 
         # Trích xuất số ID (ví dụ SV001 -> 1, NV02 -> 2, 1 -> 1)
         num_str = "".join(filter(str.isdigit, student_id))
         if not num_str:
-            return
+            return {"action": "none", "status": "no_id", "message": "Không tìm thấy mã số"}
         emp_id = int(num_str)
 
         img_b64 = None
@@ -594,16 +605,23 @@ class UnifiedAttendanceEngine:
 
         try:
             import requests
-            res = requests.post(self.web_api_url, json=payload, timeout=3.0)
+            res = requests.post(self.web_api_url, json=payload, timeout=2.5)
             if res.status_code == 200:
                 data = res.json()
                 msg = data.get("message", "Thành công")
-                print(f"[SyncWeb] ✅ Đã đồng bộ sang Web: {msg} (MaNV={emp_id})")
+                st = data.get("status", "")
+                if st == "completed":
+                    print(f"[SyncWeb] ⛔ TỪ CHỐI: {msg} (MaNV={emp_id})")
+                else:
+                    print(f"[SyncWeb] ✅ Đã đồng bộ sang Web: {msg} (MaNV={emp_id})")
+                return data
             else:
                 print(f"[SyncWeb] ⚠️ Web trả về mã {res.status_code}: {res.text[:80]}")
+                return {"action": "error", "status": "error", "message": f"HTTP {res.status_code}"}
         except Exception as e:
             # Không làm gián đoạn hệ thống nếu Web/Docker chưa mở
             print(f"[SyncWeb] ℹ️ Chưa kết nối Web API ({self.web_api_url}): {e}")
+            return {"action": "offline", "status": "offline", "message": "Ngoại tuyến"}
 
     def close(self) -> None:
         """Đóng an toàn ThreadPool."""

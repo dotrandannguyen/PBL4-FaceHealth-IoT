@@ -35,6 +35,9 @@ final class AttendanceModel
                 CC.MaCC,
                 CC.GioVao,
                 CC.GioRa,
+                COALESCE(CC.TheTrangVao, CC.TheTrang, 'Bình thường') AS TheTrangVao,
+                CC.TheTrangRa,
+                CC.TheTrang,
                 CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhVao), 0) > 0 THEN 1 ELSE 0 END AS HasImageIn,
                 CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhRa), 0) > 0 THEN 1 ELSE 0 END AS HasImageOut
             FROM NhanVien NV
@@ -47,7 +50,7 @@ final class AttendanceModel
                 WHERE CC2.MaNV = NV.MaNV
                     AND CC2.GioVao >= :attendance_start
                     AND CC2.GioVao < :attendance_end
-                ORDER BY CC2.GioVao ASC, CC2.MaCC ASC
+                ORDER BY CC2.GioVao DESC, CC2.MaCC DESC
                 LIMIT 1
             )
             WHERE 1 = 1 {$filter}
@@ -95,6 +98,9 @@ final class AttendanceModel
                 CLV.GioKetThuc,
                 CC.GioVao,
                 CC.GioRa,
+                COALESCE(CC.TheTrangVao, CC.TheTrang, 'Bình thường') AS TheTrangVao,
+                CC.TheTrangRa,
+                CC.TheTrang,
                 DATE_FORMAT(CC.GioVao, '%Y-%m-%d') AS Ngay,
                 CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhVao), 0) > 0 THEN 1 ELSE 0 END AS HasImageIn,
                 CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhRa), 0) > 0 THEN 1 ELSE 0 END AS HasImageOut
@@ -217,6 +223,7 @@ final class AttendanceModel
             SELECT MaCC, GioVao, GioRa, MaCa
             FROM ChamCong
             WHERE MaNV = :employee_id AND DATE(GioVao) = :work_date
+            ORDER BY MaCC DESC
             LIMIT 1
             SQL);
         $statement->execute([
@@ -228,31 +235,48 @@ final class AttendanceModel
         return $record === false ? null : $record;
     }
 
-    /** Tạo bản ghi check-in và trả MaCC mới; ảnh JPEG được lưu dạng LOB nếu có. */
-    public function insertCheckin(int $employeeId, int $deviceId, int $shiftId, ?string $image): int
+    public function deleteAttendance(int $attendanceId): bool
     {
         $statement = Database::getConnection()->prepare(<<<'SQL'
-            INSERT INTO ChamCong (MaNV, GioVao, GioRa, MaTB, MaCa, AnhVao)
-            VALUES (:employee_id, CURRENT_TIMESTAMP, NULL, :device_id, :shift_id, :image)
+            DELETE FROM ChamCong WHERE MaCC = :attendance_id
+            SQL);
+        $statement->bindValue(':attendance_id', $attendanceId, PDO::PARAM_INT);
+
+        return $statement->execute();
+    }
+
+    /** Tạo bản ghi check-in và trả MaCC mới; ảnh JPEG được lưu dạng LOB nếu có. */
+    public function insertCheckin(int $employeeId, int $deviceId, int $shiftId, ?string $image, string $theTrang = 'Bình thường'): int
+    {
+        $statement = Database::getConnection()->prepare(<<<'SQL'
+            INSERT INTO ChamCong (MaNV, GioVao, GioRa, MaTB, MaCa, AnhVao, TheTrangVao, TheTrang)
+            VALUES (:employee_id, CURRENT_TIMESTAMP, NULL, :device_id, :shift_id, :image, :the_trang_vao, :the_trang)
             SQL);
         $statement->bindValue(':employee_id', $employeeId, PDO::PARAM_INT);
         $statement->bindValue(':device_id', $deviceId, PDO::PARAM_INT);
         $statement->bindValue(':shift_id', $shiftId, PDO::PARAM_INT);
         $statement->bindValue(':image', $image, $image === null ? PDO::PARAM_NULL : PDO::PARAM_LOB);
+        $statement->bindValue(':the_trang_vao', $theTrang);
+        $statement->bindValue(':the_trang', $theTrang);
         $statement->execute();
 
         return (int)Database::getConnection()->lastInsertId();
     }
 
     /** Ghi giờ checkout và ảnh ra cho đúng MaCC. */
-    public function updateCheckout(int $attendanceId, ?string $image): void
+    public function updateCheckout(int $attendanceId, ?string $image, ?string $theTrang = null): void
     {
-        $statement = Database::getConnection()->prepare(<<<'SQL'
-            UPDATE ChamCong
-            SET GioRa = CURRENT_TIMESTAMP, AnhRa = :image
-            WHERE MaCC = :attendance_id
-            SQL);
+        $sql = 'UPDATE ChamCong SET GioRa = CURRENT_TIMESTAMP, AnhRa = :image';
+        if ($theTrang !== null) {
+            $sql .= ', TheTrangRa = :the_trang_ra, TheTrang = :the_trang';
+        }
+        $sql .= ' WHERE MaCC = :attendance_id';
+        $statement = Database::getConnection()->prepare($sql);
         $statement->bindValue(':image', $image, $image === null ? PDO::PARAM_NULL : PDO::PARAM_LOB);
+        if ($theTrang !== null) {
+            $statement->bindValue(':the_trang_ra', $theTrang);
+            $statement->bindValue(':the_trang', $theTrang);
+        }
         $statement->bindValue(':attendance_id', $attendanceId, PDO::PARAM_INT);
         $statement->execute();
     }

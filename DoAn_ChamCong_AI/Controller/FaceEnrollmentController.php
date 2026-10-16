@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/AuthController.php';
+require_once __DIR__ . '/../Model/Database.php';
 require_once __DIR__ . '/../Model/EmployeeModel.php';
 require_once __DIR__ . '/../Model/FaceEmbeddingModel.php';
 require_once __DIR__ . '/../Security/CsrfToken.php';
@@ -187,6 +188,15 @@ final class FaceEnrollmentController
 
         try {
             $ids = $this->faceEmbeddings->replaceByEmployee($employeeId, $state['samples']);
+            if (!empty($state['samples'][0]['image'])) {
+                try {
+                    $avatar = 'data:image/jpeg;base64,' . base64_encode($state['samples'][0]['image']);
+                    Database::getConnection()->prepare('UPDATE NhanVien SET AnhKhuonMat = :avatar WHERE MaNV = :id')
+                        ->execute(['avatar' => $avatar, 'id' => $employeeId]);
+                } catch (Throwable $e) {
+                    error_log('Update NhanVien AnhKhuonMat failed: ' . $e->getMessage());
+                }
+            }
             unset($_SESSION[self::SESSION_KEY][$employeeId]);
             $galleryUpdated = false;
             try {

@@ -86,9 +86,29 @@ $alertsTabUrl = '/?' . http_build_query($tabQuery);
             <?php if ($healthRows === []): ?><div class="empty-state workspace-empty">Không có dữ liệu sức khỏe phù hợp.</div><?php else: ?>
                 <div class="table-scroll"><table class="employee-table data-table">
                     <caption class="visually-hidden">Lịch sử sức khỏe</caption>
-                    <thead><tr><th>Mã NV</th><th>Họ tên</th><th>Nhịp tim</th><th>SpO₂</th><th>Thời gian</th></tr></thead>
+                    <thead><tr><th>Mã NV</th><th>Họ tên</th><th>Nhịp tim</th><th>SpO₂</th><th>Thể trạng (AI 2)</th><th>Thời gian</th></tr></thead>
                     <tbody><?php foreach ($healthRows as $record): $employeeId = (int)$record['MaNV']; ?>
-                        <tr><td><span class="employee-code">NV<?= str_pad((string)$employeeId, 3, '0', STR_PAD_LEFT) ?></span></td><td><?= $h($record['HoTen']) ?></td><td><?= $record['NhipTim'] === null ? '--' : $h($record['NhipTim']) . ' bpm' ?></td><td><?= $record['SpO2'] === null ? '--' : $h($record['SpO2']) . ' %' ?></td><td><?= $record['ThoiGian'] === null ? '--' : $h((new DateTimeImmutable((string)$record['ThoiGian']))->format('Y-m-d H:i:s')) ?></td></tr>
+                        <tr>
+                            <td><span class="employee-code">NV<?= str_pad((string)$employeeId, 3, '0', STR_PAD_LEFT) ?></span></td>
+                            <td><?= $h($record['HoTen']) ?></td>
+                            <td><?= $record['NhipTim'] === null ? '--' : $h($record['NhipTim']) . ' bpm' ?></td>
+                            <td><?= $record['SpO2'] === null ? '--' : $h($record['SpO2']) . ' %' ?></td>
+                            <td>
+                                <?php
+                                $tt = (string)($record['TheTrang'] ?? '');
+                                if ($tt === 'Kiệt sức') {
+                                    echo '<span class="status-pill" style="background:#fee2e2;color:#b91c1c;border:1px solid #f87171;font-weight:600;">🔴 Kiệt sức</span>';
+                                } elseif ($tt === 'Mệt mỏi') {
+                                    echo '<span class="status-pill" style="background:#fef3c7;color:#b45309;border:1px solid #fbbf24;font-weight:600;">🟡 Mệt mỏi</span>';
+                                } elseif ($tt === 'Bình thường') {
+                                    echo '<span class="status-pill" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;font-weight:600;">🟢 Bình thường</span>';
+                                } else {
+                                    echo '<span class="evidence-empty">--</span>';
+                                }
+                                ?>
+                            </td>
+                            <td><?= $record['ThoiGian'] === null ? '--' : $h((new DateTimeImmutable((string)$record['ThoiGian']))->format('Y-m-d H:i:s')) ?></td>
+                        </tr>
                     <?php endforeach; ?></tbody>
                 </table></div>
                 <?php if ($totalHealthPages > 1): ?><nav class="attendance-pagination" aria-label="Phân trang sức khỏe"><?php if ($healthPage > 1): ?><a class="text-action" href="<?= $h($healthPageUrl($healthPage - 1)) ?>">‹ Trước</a><?php endif; ?><span><?= (int)$healthPage ?> / <?= (int)$totalHealthPages ?></span><?php if ($healthPage < $totalHealthPages): ?><a class="text-action" href="<?= $h($healthPageUrl($healthPage + 1)) ?>">Sau ›</a><?php endif; ?></nav><?php endif; ?>

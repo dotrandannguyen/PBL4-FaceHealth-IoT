@@ -16,7 +16,7 @@ final class AttendanceService
      * Áp dụng nghiệp vụ check-in/check-out cho nhân viên, ca và thiết bị đã xác định.
      * Transaction ngoài (nếu có) được giữ quyền sở hữu; nếu không, service tự quản lý.
      */
-    public function process(int $employeeId, int $deviceId, ?string $image): array
+    public function process(int $employeeId, int $deviceId, ?string $image, string $theTrang = 'Bình thường'): array
     {
         $pdo = Database::getConnection();
         $ownsTransaction = !$pdo->inTransaction();
@@ -41,7 +41,7 @@ final class AttendanceService
             $todayRecord = $this->attendance->findTodayRecord($employeeId, $today);
             if ($todayRecord === null) {
                 try {
-                    $this->attendance->insertCheckin($employeeId, $deviceId, (int)$shift['MaCa'], $image);
+                    $this->attendance->insertCheckin($employeeId, $deviceId, (int)$shift['MaCa'], $image, $theTrang);
                 } catch (Throwable $exception) {
                     return $this->fail($pdo, $ownsTransaction, 'Lỗi check-in: ' . $exception->getMessage());
                 }
@@ -52,12 +52,13 @@ final class AttendanceService
                     'message' => 'Chấm công vào thành công — Ca: ' . $shift['TenCa'],
                     'MaCa' => (int)$shift['MaCa'],
                     'TenCa' => (string)$shift['TenCa'],
+                    'TheTrang' => $theTrang,
                 ]);
             }
 
             if ($todayRecord['GioVao'] !== null && $todayRecord['GioRa'] === null) {
                 try {
-                    $this->attendance->updateCheckout((int)$todayRecord['MaCC'], $image);
+                    $this->attendance->updateCheckout((int)$todayRecord['MaCC'], $image, $theTrang);
                 } catch (Throwable $exception) {
                     return $this->fail($pdo, $ownsTransaction, 'Lỗi check-out: ' . $exception->getMessage());
                 }
@@ -68,13 +69,14 @@ final class AttendanceService
                     'message' => 'Chấm công ra thành công — Ca: ' . $shift['TenCa'],
                     'MaCa' => (int)$shift['MaCa'],
                     'TenCa' => (string)$shift['TenCa'],
+                    'TheTrang' => $theTrang,
                 ]);
             }
 
             return $this->finish($pdo, $ownsTransaction, [
                 'action' => 'completed',
-                'status' => 'success',
-                'message' => 'Đã hoàn tất chấm công hôm nay',
+                'status' => 'completed',
+                'message' => 'Hôm nay bạn đã hoàn thành ca làm việc, không cần chấm công nữa!',
                 'MaCa' => (int)$shift['MaCa'],
                 'TenCa' => (string)$shift['TenCa'],
             ]);

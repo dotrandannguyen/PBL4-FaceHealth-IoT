@@ -38,6 +38,8 @@ final class Database
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
 
+        self::$connection->exec("SET time_zone = '+07:00';");
+
         return self::$connection;
     }
 }

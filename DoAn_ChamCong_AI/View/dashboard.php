@@ -32,13 +32,31 @@ foreach ($weekly as $day) {
             <div class="workspace-section-heading"><h2 id="today-attendance-title">Chấm công hôm nay</h2></div>
             <div class="table-scroll"><table class="employee-table data-table dashboard-attendance-table">
                 <caption class="visually-hidden">Chấm công nhân viên ngày <?= $h($dateLabel) ?></caption>
-                <thead><tr><th>Mã NV</th><th>Họ tên</th><th>Ca</th><th>Giờ vào</th><th>Giờ ra</th><th>Trạng thái vào</th><th>Trạng thái ra</th></tr></thead>
-                <tbody><?php if ($attendance === []): ?><tr><td colspan="7"><div class="empty-state">Chưa có nhân viên để hiển thị.</div></td></tr><?php else: foreach ($attendance as $row): $employeeId = (int)$row['MaNV']; ?>
+                <thead><tr><th>Mã NV</th><th>Họ tên</th><th>Ca</th><th>Giờ vào</th><th>Giờ ra</th><th>Thể trạng vào</th><th>Thể trạng ra</th><th>Trạng thái vào</th><th>Trạng thái ra</th></tr></thead>
+                <tbody><?php if ($attendance === []): ?><tr><td colspan="9"><div class="empty-state">Chưa có nhân viên để hiển thị.</div></td></tr><?php else:
+                    $renderTheTrangDash = static function(?string $status): string {
+                        if ($status === null || $status === '') {
+                            return '<span class="evidence-empty">--</span>';
+                        }
+                        if ($status === 'Kiệt sức') {
+                            return '<span class="status-pill" style="background:#fee2e2;color:#b91c1c;border:1px solid #f87171;font-weight:600;font-size:12px;padding:2px 8px;">🔴 Kiệt sức</span>';
+                        }
+                        if ($status === 'Mệt mỏi') {
+                            return '<span class="status-pill" style="background:#fef3c7;color:#b45309;border:1px solid #fbbf24;font-weight:600;font-size:12px;padding:2px 8px;">🟡 Mệt mỏi</span>';
+                        }
+                        if ($status === 'Bình thường') {
+                            return '<span class="status-pill" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;font-weight:600;font-size:12px;padding:2px 8px;">🟢 Bình thường</span>';
+                        }
+                        return '<span class="status-pill" style="font-size:12px;padding:2px 8px;">' . htmlspecialchars($status, ENT_QUOTES, 'UTF-8') . '</span>';
+                    };
+                    foreach ($attendance as $row): $employeeId = (int)$row['MaNV']; ?>
                     <tr>
                         <td><span class="employee-code">NV<?= str_pad((string)$employeeId, 3, '0', STR_PAD_LEFT) ?></span></td>
                         <td><?= $h($row['HoTen']) ?></td>
                         <td><?= $h($row['TenCaDisplay']) ?><?php if ($row['ThoiGianCa'] !== '--'): ?><small class="dashboard-table-subtext"><?= $h($row['ThoiGianCa']) ?></small><?php endif; ?></td>
                         <td class="dashboard-time"><?= $h($row['GioVaoDisplay']) ?></td><td class="dashboard-time"><?= $h($row['GioRaDisplay']) ?></td>
+                        <td><?= $row['GioVaoDisplay'] !== '--' ? $renderTheTrangDash($row['TheTrangVao'] ?? null) : '<span class="evidence-empty">--</span>' ?></td>
+                        <td><?= $row['GioRaDisplay'] !== '--' ? $renderTheTrangDash($row['TheTrangRa'] ?? null) : '<span class="evidence-empty">--</span>' ?></td>
                         <td><span class="dashboard-badge"><?= $h($row['TrangThaiVao']) ?></span></td><td><span class="dashboard-badge"><?= $h($row['TrangThaiRa']) ?></span></td>
                     </tr>
                 <?php endforeach; endif; ?></tbody>

@@ -30,7 +30,7 @@ final class HealthModel
 
         $offset = ($page - 1) * $pageSize;
         $statement = $pdo->prepare(<<<SQL
-            SELECT SK.MaSK, SK.MaNV, NV.HoTen, SK.NhipTim, SK.SpO2, SK.ThoiGian
+            SELECT SK.MaSK, SK.MaNV, NV.HoTen, SK.NhipTim, SK.SpO2, SK.TheTrang, SK.ThoiGian
             {$fromSql}
             {$whereSql}
             ORDER BY SK.ThoiGian DESC, SK.MaSK DESC
@@ -67,15 +67,16 @@ final class HealthModel
         return array_reverse($statement->fetchAll());
     }
 
-    public function insertRecord(int $employeeId, ?int $hr, ?float $spo2): int
+    public function insertRecord(int $employeeId, ?int $hr, ?float $spo2, string $theTrang = 'Bình thường'): int
     {
         $statement = Database::getConnection()->prepare(<<<'SQL'
-            INSERT INTO LichSuSucKhoe (MaNV, NhipTim, SpO2, ThoiGian)
-            VALUES (:employee_id, :hr, :spo2, CURRENT_TIMESTAMP(3))
+            INSERT INTO LichSuSucKhoe (MaNV, NhipTim, SpO2, TheTrang, ThoiGian)
+            VALUES (:employee_id, :hr, :spo2, :the_trang, CURRENT_TIMESTAMP(3))
             SQL);
         $statement->bindValue(':employee_id', $employeeId, PDO::PARAM_INT);
         $statement->bindValue(':hr', $hr, $hr === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
         $statement->bindValue(':spo2', $spo2, $spo2 === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $statement->bindValue(':the_trang', $theTrang);
         $statement->execute();
 
         return (int)Database::getConnection()->lastInsertId();

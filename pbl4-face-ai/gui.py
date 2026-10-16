@@ -35,8 +35,9 @@ class FaceAIDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🤖 Bảng Điều Khiển Hệ Thống Face AI - PBL4")
-        self.geometry("750x550")
+        self.geometry("780x640")
         self.resizable(False, False)
+        self.ai_service_proc = None
         
         # Cài đặt Theme cho đẹp hơn
         style = ttk.Style(self)
@@ -56,6 +57,7 @@ class FaceAIDashboard(tk.Tk):
         self.setup_left_panel()
         self.setup_right_panel()
         self.refresh_user_list()
+        self.after(500, self._check_ai_service_status)
 
     def setup_left_panel(self):
         # --- Phần Đăng ký ---
@@ -83,14 +85,35 @@ class FaceAIDashboard(tk.Tk):
         btn_att.pack(fill="x", pady=5)
 
         # --- Phần Trạng thái ---
-        frame_status = ttk.LabelFrame(self.left_frame, text=" 🧠 Nhận diện Trạng thái (AI 2) ", padding=15)
-        frame_status.pack(fill="x", pady=10)
+        frame_status = ttk.LabelFrame(self.left_frame, text=" 🧠 Nhận diện Trạng thái (AI 2) ", padding=12)
+        frame_status.pack(fill="x", pady=6)
 
         btn_train = ttk.Button(frame_status, text="🔄 Thu thập & Tự động Train AI", command=self.handle_train_status)
-        btn_train.pack(fill="x", pady=5)
+        btn_train.pack(fill="x", pady=3)
 
         btn_test = ttk.Button(frame_status, text="🧪 Test Trạng thái (Real-time)", command=self.handle_test_status)
-        btn_test.pack(fill="x", pady=5)
+        btn_test.pack(fill="x", pady=3)
+
+        # --- Phần AI REST Service & Web Quản lý ---
+        frame_web = ttk.LabelFrame(self.left_frame, text=" 🌐 AI Service & Web Quản trị ", padding=12)
+        frame_web.pack(fill="x", pady=6)
+
+        self.lbl_service_status = ttk.Label(frame_web, text="⚪ AI Service: Đang kiểm tra...", font=("Segoe UI", 9))
+        self.lbl_service_status.pack(fill="x", pady=2)
+
+        self.btn_service = ttk.Button(
+            frame_web,
+            text="🚀 Bật AI REST Service (Port 5001)",
+            command=self.handle_toggle_ai_service,
+        )
+        self.btn_service.pack(fill="x", pady=3)
+
+        btn_open_web = ttk.Button(
+            frame_web,
+            text="🌍 Mở Web Quản trị (localhost:8080)",
+            command=self.handle_open_web,
+        )
+        btn_open_web.pack(fill="x", pady=3)
 
     def setup_right_panel(self):
         # --- Danh sách User ---
@@ -160,20 +183,96 @@ class FaceAIDashboard(tk.Tk):
 
     def handle_test_status(self):
         run_cmd([PYTHON_CMD, "src/predict_status.py"], "Test Trạng thái")
-        
+
     def handle_clear_db(self):
         if messagebox.askyesno("Cảnh báo", "Bạn có chắc chắn muốn xóa TOÀN BỘ dữ liệu sinh viên đã đăng ký không?"):
             if DB_PATH.exists():
                 DB_PATH.unlink()
-            
-            # Xóa các folder ảnh trong data/registered nếu muốn (ở đây ta chỉ xóa file pkl cho nhanh)
             import shutil
             reg_dir = Path("data/registered")
             if reg_dir.exists():
                 shutil.rmtree(reg_dir, ignore_errors=True)
-                
+            try:
+                import pymysql
+                conn = pymysql.connect(
+                    host="127.0.0.1", port=3306, user="pbl4_user", password="pbl4_password",
+                    database="DoAn_ChamCong_AI_MariaDB", charset="utf8mb4", autocommit=True, connect_timeout=2
+                )
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM FaceEmbedding;")
+                cursor.close(); conn.close()
+            except Exception:
+                pass
             self.refresh_user_list()
             messagebox.showinfo("Thành công", "Đã xóa sạch cơ sở dữ liệu khuôn mặt!")
+
+    def handle_toggle_ai_service(self):
+        import urllib.request
+        is_running = False
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:5001/health", timeout=0.5) as r:
+                if r.status == 200:
+                    is_running = True
+        except Exception:
+            is_running = False
+
+        if is_running:
+            if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
+                self.ai_service_proc.terminate()
+                self.ai_service_proc = None
+                messagebox.showinfo("AI Service", "Đã dừng AI REST Service.")
+            else:
+                messagebox.showinfo("AI Service", "AI Service đang chạy ở process khác hoặc cổng 5001 đang được sử dụng.")
+        else:
+            try:
+                self.ai_service_proc = subprocess.Popen([PYTHON_CMD, "ai_web_service.py"], env=ENV)
+                messagebox.showinfo("AI Service", "Đã khởi động AI REST Service trên cổng 5001!")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể bật AI Service:\n{str(e)}")
+
+        self._check_ai_service_status()
+
+    def handle_open_web(self):
+        import webbrowser
+        webbrowser.open("http://localhost:8080")
+
+    def _check_ai_service_status(self):
+        def _check():
+            import urllib.request
+            running = False
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:5001/health", timeout=0.6) as r:
+                    if r.status == 200:
+                        running = True
+            except Exception:
+                running = False
+
+            def _update_ui():
+                if running:
+                    self.lbl_service_status.config(
+                        text="🟢 AI Service: Đang chạy (Port 5001)",
+                        foreground="#27ae60",
+                    )
+                    self.btn_service.config(text="🛑 Dừng AI REST Service")
+                else:
+                    self.lbl_service_status.config(
+                        text="⚪ AI Service: Đã dừng",
+                        foreground="#7f8c8d",
+                    )
+                    self.btn_service.config(text="🚀 Bật AI REST Service (Port 5001)")
+                self.after(3000, self._check_ai_service_status)
+
+            self.after(0, _update_ui)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def destroy(self):
+        if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
+            try:
+                self.ai_service_proc.terminate()
+            except Exception:
+                pass
+        super().destroy()
 
 if __name__ == "__main__":
     app = FaceAIDashboard()

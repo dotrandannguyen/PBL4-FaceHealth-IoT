@@ -64,8 +64,24 @@ $myEmployeeCode = 'NV' . str_pad((string)$myEmployeeId, 3, '0', STR_PAD_LEFT);
             <?php if ($errors !== []): ?><div class="my-validation-errors" role="alert"><?php foreach ($errors as $message): ?><p><?= $h($message) ?></p><?php endforeach; ?></div><?php endif; ?>
             <div class="table-scroll"><table class="employee-table data-table my-history-table">
                 <caption class="visually-hidden">Lịch sử chấm công cá nhân</caption>
-                <thead><tr><th>Ngày</th><th>Ca</th><th>Giờ vào</th><th>Ảnh vào</th><th>Giờ ra</th><th>Ảnh ra</th><th>Trạng thái vào</th><th>Trạng thái ra</th></tr></thead>
-                <tbody><?php if ($attendanceRows === []): ?><tr><td colspan="8"><div class="empty-state">Chưa có lịch sử chấm công phù hợp.</div></td></tr><?php else: foreach ($attendanceRows as $row): ?>
+                <thead><tr><th>Ngày</th><th>Ca</th><th>Giờ vào</th><th>Ảnh vào</th><th>Thể trạng vào</th><th>Giờ ra</th><th>Ảnh ra</th><th>Thể trạng ra</th><th>Trạng thái vào</th><th>Trạng thái ra</th></tr></thead>
+                <tbody><?php if ($attendanceRows === []): ?><tr><td colspan="10"><div class="empty-state">Chưa có lịch sử chấm công phù hợp.</div></td></tr><?php else:
+                    $renderTheTrangMy = static function(?string $status): string {
+                        if ($status === null || $status === '') {
+                            return '<span class="evidence-empty">--</span>';
+                        }
+                        if ($status === 'Kiệt sức') {
+                            return '<span class="status-pill" style="background:#fee2e2;color:#b91c1c;border:1px solid #f87171;font-weight:600;font-size:12px;padding:2px 8px;">🔴 Kiệt sức</span>';
+                        }
+                        if ($status === 'Mệt mỏi') {
+                            return '<span class="status-pill" style="background:#fef3c7;color:#b45309;border:1px solid #fbbf24;font-weight:600;font-size:12px;padding:2px 8px;">🟡 Mệt mỏi</span>';
+                        }
+                        if ($status === 'Bình thường') {
+                            return '<span class="status-pill" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;font-weight:600;font-size:12px;padding:2px 8px;">🟢 Bình thường</span>';
+                        }
+                        return '<span class="status-pill" style="font-size:12px;padding:2px 8px;">' . htmlspecialchars($status, ENT_QUOTES, 'UTF-8') . '</span>';
+                    };
+                    foreach ($attendanceRows as $row): ?>
                     <tr>
                         <td><?= $row['GioVao'] ? $h((new DateTimeImmutable((string)$row['GioVao']))->format('Y-m-d')) : '--' ?></td>
                         <td><?= $h($row['TenCa'] ?? '--') ?></td>
@@ -76,12 +92,14 @@ $myEmployeeCode = 'NV' . str_pad((string)$myEmployeeId, 3, '0', STR_PAD_LEFT);
                             $evidenceTime = !empty($row['GioVao']) ? (new DateTimeImmutable((string)$row['GioVao']))->format('d/m/Y H:i:s') : '';
                             if ((int)$row['HasImageIn'] === 1) require __DIR__ . '/partials/evidence_thumbnail.php'; else echo '<span class="evidence-empty">--</span>';
                         ?></td>
+                        <td><?= $renderTheTrangMy($row['TheTrangVao'] ?? null) ?></td>
                         <td><?= $row['GioRa'] ? $h((new DateTimeImmutable((string)$row['GioRa']))->format('H:i:s')) : '--' ?></td>
                         <td class="evidence-cell"><?php
                             $evidenceAction = '/?action=my_attendance_image_out'; $evidenceKind = 'Ảnh ra';
                             $evidenceTime = !empty($row['GioRa']) ? (new DateTimeImmutable((string)$row['GioRa']))->format('d/m/Y H:i:s') : '';
                             if ((int)$row['HasImageOut'] === 1) require __DIR__ . '/partials/evidence_thumbnail.php'; else echo '<span class="evidence-empty">--</span>';
                         ?></td>
+                        <td><?= $row['GioRa'] ? $renderTheTrangMy($row['TheTrangRa'] ?? null) : '<span class="evidence-empty">--</span>' ?></td>
                         <td><?= $h($row['Statuses']['entry']) ?></td><td><?= $h($row['Statuses']['exit']) ?></td>
                     </tr>
                 <?php endforeach; endif; ?></tbody>
@@ -91,8 +109,26 @@ $myEmployeeCode = 'NV' . str_pad((string)$myEmployeeId, 3, '0', STR_PAD_LEFT);
             <div class="my-history-block">
                 <div class="table-scroll"><table class="employee-table data-table">
                     <caption class="visually-hidden">Lịch sử sức khỏe cá nhân</caption>
-                    <thead><tr><th>Nhịp tim</th><th>SpO₂</th><th>Thời gian</th></tr></thead>
-                    <tbody><?php if ($healthRows === []): ?><tr><td colspan="3"><div class="empty-state">Chưa có dữ liệu sức khỏe.</div></td></tr><?php else: foreach ($healthRows as $row): ?><tr><td><?= $row['NhipTim'] === null ? '--' : $h($row['NhipTim']) . ' bpm' ?></td><td><?= $row['SpO2'] === null ? '--' : $h($row['SpO2']) . '%' ?></td><td><?= $h($row['ThoiGian']) ?></td></tr><?php endforeach; endif; ?></tbody>
+                    <thead><tr><th>Nhịp tim</th><th>SpO₂</th><th>Thể trạng (AI 2)</th><th>Thời gian</th></tr></thead>
+                    <tbody><?php if ($healthRows === []): ?><tr><td colspan="4"><div class="empty-state">Chưa có dữ liệu sức khỏe.</div></td></tr><?php else: foreach ($healthRows as $row): ?><tr>
+                        <td><?= $row['NhipTim'] === null ? '--' : $h($row['NhipTim']) . ' bpm' ?></td>
+                        <td><?= $row['SpO2'] === null ? '--' : $h($row['SpO2']) . '%' ?></td>
+                        <td>
+                            <?php
+                            $tt = (string)($row['TheTrang'] ?? '');
+                            if ($tt === 'Kiệt sức') {
+                                echo '<span class="status-pill" style="background:#fee2e2;color:#b91c1c;border:1px solid #f87171;font-weight:600;font-size:12px;padding:2px 8px;">🔴 Kiệt sức</span>';
+                            } elseif ($tt === 'Mệt mỏi') {
+                                echo '<span class="status-pill" style="background:#fef3c7;color:#b45309;border:1px solid #fbbf24;font-weight:600;font-size:12px;padding:2px 8px;">🟡 Mệt mỏi</span>';
+                            } elseif ($tt === 'Bình thường') {
+                                echo '<span class="status-pill" style="background:#dcfce7;color:#15803d;border:1px solid #86efac;font-weight:600;font-size:12px;padding:2px 8px;">🟢 Bình thường</span>';
+                            } else {
+                                echo '<span class="evidence-empty">--</span>';
+                            }
+                            ?>
+                        </td>
+                        <td><?= $h($row['ThoiGian']) ?></td>
+                    </tr><?php endforeach; endif; ?></tbody>
                 </table></div>
             </div>
             <div class="my-history-block">

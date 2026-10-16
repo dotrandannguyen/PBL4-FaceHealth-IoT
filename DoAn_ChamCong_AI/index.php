@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+date_default_timezone_set('Asia/Ho_Chi_Minh');
+
 require_once __DIR__ . '/Security/CsrfToken.php';
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -44,7 +46,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = $_GET['action'] ?? 'index';
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 
-if ($requestPath === '/api/chamcong') {
+if ($requestPath === '/api/chamcong' || $action === 'chamcong') {
     if ($method !== 'POST') {
         header('Allow: POST');
         http_response_code(405);
@@ -212,6 +214,11 @@ if ($action === 'attendance' && $method === 'GET') {
     return;
 }
 
+if ($action === 'delete_attendance' && $method === 'POST') {
+    $attendanceController->delete();
+    return;
+}
+
 if ($action === 'monitoring' && $method === 'GET') {
     $monitoringController->index();
     return;
@@ -251,10 +258,10 @@ if ($action === 'attendance_image_out' && $method === 'GET') {
     return;
 }
 
-if (in_array($action, ['index', 'dashboard', 'create', 'store', 'edit', 'update', 'login', 'logout', 'shifts', 'assign_shift', 'unassign_shift', 'create_shift', 'update_shift', 'delete_shift', 'disable_shift', 'enable_shift', 'attendance', 'health', 'alerts', 'monitoring', 'attendance_image_in', 'attendance_image_out', 'my', 'my_attendance_image_in', 'my_attendance_image_out', 'internal_face_gallery', 'ai_camera', 'devices', 'face_image', 'face_camera_frame', ...array_keys($faceEnrollmentActions)], true)) {
+if (in_array($action, ['index', 'dashboard', 'create', 'store', 'edit', 'update', 'login', 'logout', 'shifts', 'assign_shift', 'unassign_shift', 'create_shift', 'update_shift', 'delete_shift', 'disable_shift', 'enable_shift', 'attendance', 'delete_attendance', 'health', 'alerts', 'monitoring', 'attendance_image_in', 'attendance_image_out', 'my', 'my_attendance_image_in', 'my_attendance_image_out', 'internal_face_gallery', 'ai_camera', 'devices', 'face_image', 'face_camera_frame', ...array_keys($faceEnrollmentActions)], true)) {
     $allowedMethods = match ($action) {
         'login' => 'GET, POST',
-        'store', 'update', 'logout', 'assign_shift', 'unassign_shift', 'create_shift', 'update_shift', 'delete_shift', 'disable_shift', 'enable_shift' => 'POST',
+        'store', 'update', 'logout', 'assign_shift', 'unassign_shift', 'create_shift', 'update_shift', 'delete_shift', 'disable_shift', 'enable_shift', 'delete_attendance' => 'POST',
         'internal_face_gallery', 'ai_camera', 'devices', 'face_image', 'face_camera_frame', 'attendance_image_in', 'attendance_image_out', 'my', 'my_attendance_image_in', 'my_attendance_image_out', 'health', 'alerts', 'monitoring' => 'GET',
         default => isset($faceEnrollmentActions[$action]) ? 'POST' : 'GET',
     };

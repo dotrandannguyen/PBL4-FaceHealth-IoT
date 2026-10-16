@@ -101,11 +101,14 @@ final class MyModel
         $statement = Database::getConnection()->prepare(<<<SQL
             SELECT
                 CC.MaCC, CC.MaNV, CC.GioVao, CC.GioRa,
+                CC.TheTrangVao, CC.TheTrangRa,
                 CLV.TenCa, CLV.GioBatDau, CLV.GioKetThuc,
                 CC.HasImageIn, CC.HasImageOut
             FROM (
                 SELECT
                     CC.MaCC, CC.MaNV, CC.MaCa, CC.GioVao, CC.GioRa,
+                    COALESCE(CC.TheTrangVao, CC.TheTrang, 'Bình thường') AS TheTrangVao,
+                    CC.TheTrangRa,
                     CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhVao), 0) > 0 THEN 1 ELSE 0 END AS HasImageIn,
                     CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhRa), 0) > 0 THEN 1 ELSE 0 END AS HasImageOut
                 FROM ChamCong CC
@@ -131,7 +134,7 @@ final class MyModel
     public function findHealth(int $employeeId): array
     {
         $statement = Database::getConnection()->prepare(<<<'SQL'
-            SELECT NhipTim, SpO2, ThoiGian
+            SELECT NhipTim, SpO2, TheTrang, ThoiGian
             FROM LichSuSucKhoe
             WHERE MaNV = :employee_id
             ORDER BY ThoiGian DESC, MaSK DESC

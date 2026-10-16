@@ -8,6 +8,7 @@ services:
       MYSQL_DATABASE: DoAn_ChamCong_AI_MariaDB
       MYSQL_USER: pbl4_user
       MYSQL_PASSWORD: pbl4_password
+      TZ: Asia/Ho_Chi_Minh
     ports:
       - "3306:3306"
     volumes:
@@ -34,6 +35,7 @@ services:
     ports:
       - "8080:80"
     environment:
+      TZ: Asia/Ho_Chi_Minh
       MARIADB_HOST: mariadb
       MARIADB_PORT: 3306
       MARIADB_DATABASE: DoAn_ChamCong_AI_MariaDB

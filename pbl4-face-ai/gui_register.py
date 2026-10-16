@@ -58,6 +58,102 @@ def save_db(db):
     with open(EMBEDDINGS_PATH, 'wb') as f:
         pickle.dump(db, f)
 
+def sync_user_to_mariadb(sid: str, sname: str, embeddings: list, save_dir: Path):
+    """Tự động đồng bộ nhân viên và 5 ảnh mẫu khuôn mặt vào CSDL MariaDB của Web."""
+    def _run():
+        try:
+            import pymysql
+            import base64
+            conn = pymysql.connect(
+                host="127.0.0.1",
+                port=3306,
+                user="pbl4_user",
+                password="pbl4_password",
+                database="DoAn_ChamCong_AI_MariaDB",
+                charset="utf8mb4",
+                autocommit=True,
+                connect_timeout=3,
+            )
+            cursor = conn.cursor()
+            num_str = "".join(filter(str.isdigit, sid))
+            emp_id = int(num_str) if num_str else 1
+            full_name = f"{sname} ({sid})" if sid not in sname else sname
+
+            cursor.execute(
+                """
+                INSERT INTO NhanVien (MaNV, HoTen, MaVaiTro)
+                VALUES (%s, %s, 2)
+                ON DUPLICATE KEY UPDATE HoTen = VALUES(HoTen)
+                """,
+                (emp_id, full_name),
+            )
+
+            cursor.execute("DELETE FROM FaceEmbedding WHERE MaNV = %s", (emp_id,))
+
+            sample_files = sorted(list(save_dir.glob("*.jpg"))) if save_dir.exists() else []
+            frontal_bytes = None
+
+            for idx, emb in enumerate(embeddings):
+                emb_norm = emb.astype(np.float32)
+                emb_norm = emb_norm / float(np.linalg.norm(emb_norm))
+                vec_bytes = emb_norm.tobytes()
+
+                img_bytes = None
+                if idx < len(sample_files):
+                    with open(sample_files[idx], "rb") as f_img:
+                        img_bytes = f_img.read()
+                    if frontal_bytes is None:
+                        frontal_bytes = img_bytes
+
+                cursor.execute(
+                    """
+                    INSERT INTO FaceEmbedding (MaNV, VectorData, AnhKhuonMat, SoChieu, ThoiGianTao)
+                    VALUES (%s, %s, %s, 512, NOW())
+                    """,
+                    (emp_id, vec_bytes, img_bytes),
+                )
+
+            if frontal_bytes is not None:
+                b64_avatar = "data:image/jpeg;base64," + base64.b64encode(frontal_bytes).decode("ascii")
+                cursor.execute("UPDATE NhanVien SET AnhKhuonMat = %s WHERE MaNV = %s", (b64_avatar, emp_id))
+
+            cursor.close()
+            conn.close()
+            print(f"[SyncMariaDB] ✅ Đã đồng bộ nhân viên {full_name} (MaNV={emp_id}) sang Web Database!")
+        except Exception as e:
+            print(f"[SyncMariaDB] ℹ️ Không thể đồng bộ sang MariaDB (Docker chưa bật?): {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+def delete_user_from_mariadb(sid: str):
+    """Xóa embedding nhân viên trong CSDL MariaDB."""
+    def _run():
+        try:
+            import pymysql
+            num_str = "".join(filter(str.isdigit, sid))
+            if not num_str:
+                return
+            emp_id = int(num_str)
+            conn = pymysql.connect(
+                host="127.0.0.1",
+                port=3306,
+                user="pbl4_user",
+                password="pbl4_password",
+                database="DoAn_ChamCong_AI_MariaDB",
+                charset="utf8mb4",
+                autocommit=True,
+                connect_timeout=3,
+            )
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM FaceEmbedding WHERE MaNV = %s", (emp_id,))
+            cursor.close()
+            conn.close()
+            print(f"[SyncMariaDB] ✅ Đã xóa dữ liệu khuôn mặt MaNV={emp_id} khỏi Web Database!")
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
 
 class RegisterApp(tk.Tk):
     def __init__(self):
@@ -364,6 +460,7 @@ class RegisterApp(tk.Tk):
         mean_emb = mean_emb / np.linalg.norm(mean_emb)
         db = load_db(); db[sid] = {'name': sname, 'embedding': mean_emb, 'n_images': len(self.embeddings_collected)}
         save_db(db)
+        sync_user_to_mariadb(sid, sname, self.embeddings_collected, REGISTERED_DIR / sid)
         self.btn_start.configure(state='normal'); self.btn_capture.configure(state='disabled')
         self.id_entry.configure(state='normal'); self.name_entry.configure(state='normal')
         self.progress_var.set(100)
@@ -395,6 +492,7 @@ class RegisterApp(tk.Tk):
         item = self.tree.item(sel[0]); sid, sname = item['values'][0], item['values'][1]
         if messagebox.askyesno('Xac nhan xoa', "Xoa '" + str(sname) + "' (" + str(sid) + ") khoi he thong?"):
             db = load_db(); db.pop(sid, None); save_db(db)
+            delete_user_from_mariadb(str(sid))
             import shutil
             if (REGISTERED_DIR / str(sid)).exists(): shutil.rmtree(REGISTERED_DIR / str(sid), ignore_errors=True)
             self._refresh_list(); self.status_var.set("Da xoa " + str(sname) + " (" + str(sid) + ")")

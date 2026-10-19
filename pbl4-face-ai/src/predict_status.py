@@ -201,34 +201,91 @@ class StatusPredictor:
             "is_valid": True,
         }
 
+    def predict_status_detailed(self, frames):
+        """
+        Nhận vào đúng 3 tấm ảnh rời rạc (chụp cách nhau 300ms).
+        Trả về dict chi tiết gồm nhãn, độ tin cậy và các chỉ số hình học trung bình.
+        """
+        if len(frames) != 3:
+            return {
+                "status": "Normal",
+                "confidence": 0.0,
+                "message": "Cần truyền vào đúng 3 tấm ảnh",
+                "is_valid": False,
+                "metrics": {"ear": 0.0, "mar": 0.0, "pitch": 0.0, "yaw": 0.0},
+            }
+
+        features_list = []
+        valid_feats = []
+        for frame in frames:
+            feats = self.extractor.extract_features(frame)
+            features_list.append(feats)
+            if feats is not None:
+                valid_feats.append(feats)
+
+        if not valid_feats:
+            return {
+                "status": "Unknown",
+                "confidence": 0.0,
+                "message": "Không tìm thấy khuôn mặt trong cả 3 ảnh",
+                "is_valid": False,
+                "metrics": {"ear": 0.0, "mar": 0.0, "pitch": 0.0, "yaw": 0.0},
+            }
+
+        # Nếu có 1-2 frame bị mất landmark, bù đắp từ frame hợp lệ có sẵn
+        padded_features = []
+        for f in features_list:
+            if f is not None:
+                padded_features.append(f)
+            else:
+                padded_features.append(valid_feats[0])
+
+        vector = calculate_sequence_features(padded_features)
+        if not vector:
+            return {
+                "status": "Normal",
+                "confidence": 0.5,
+                "message": "Lỗi tính vector đặc trưng",
+                "is_valid": False,
+                "metrics": {"ear": 0.0, "mar": 0.0, "pitch": 0.0, "yaw": 0.0},
+            }
+
+        if hasattr(self.model, "predict_proba"):
+            probs_arr = self.model.predict_proba([vector])[0]
+            label_idx = probs_arr.argmax()
+            predicted_label = self.classes_[label_idx]
+            conf = float(probs_arr[label_idx])
+        else:
+            predicted_label = self.model.predict([vector])[0]
+            conf = 1.0
+
+        avg_ear = sum(f.get("ear", 0.0) for f in valid_feats) / len(valid_feats)
+        avg_mar = sum(f.get("mar", 0.0) for f in valid_feats) / len(valid_feats)
+        avg_pitch = sum(f.get("pitch", 0.0) for f in valid_feats) / len(valid_feats)
+        avg_yaw = sum(f.get("yaw", 0.0) for f in valid_feats) / len(valid_feats)
+
+        return {
+            "status": predicted_label,
+            "confidence": conf,
+            "vector": vector,
+            "is_valid": True,
+            "metrics": {
+                "ear": round(float(avg_ear), 3),
+                "mar": round(float(avg_mar), 3),
+                "pitch": round(float(avg_pitch), 1),
+                "yaw": round(float(avg_yaw), 1),
+            },
+            "valid_count": len(valid_feats),
+        }
+
     def predict_status(self, frames):
         """
         Nhận vào 3 tấm ảnh (frames) từ camera hoặc lúc chấm công snapshot.
         Giữ nguyên tương thích ngược với API cũ.
         Trả về: "Normal", "Fatigue", "Exhausted" (hoặc chuỗi lỗi).
         """
-        if len(frames) != 3:
-            return "Error: Cần truyền vào đúng 3 tấm ảnh."
-
-        features_list = []
-        for frame in frames:
-            feats = self.extractor.extract_features(frame)
-            if feats is None:
-                return "Unknown (Không thấy mặt)"
-            features_list.append(feats)
-
-        # Tính toán vector gồm 7 đặc trưng
-        vector = calculate_sequence_features(features_list)
-        if not vector:
-            return "Unknown (Lỗi tính toán)"
-
-        # Dùng predict_proba thay vì predict đơn thuần — chọn nhãn có xác suất cao nhất
-        if hasattr(self.model, "predict_proba"):
-            probs_arr = self.model.predict_proba([vector])[0]
-            label_idx = probs_arr.argmax()
-            return self.classes_[label_idx]
-        else:
-            return self.model.predict([vector])[0]
+        res = self.predict_status_detailed(frames)
+        return res.get("status", "Unknown")
 
 
 def to_serializable(result: dict) -> dict:

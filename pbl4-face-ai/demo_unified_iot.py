@@ -127,7 +127,7 @@ class MockHardwareController:
         self.engine.start_session(ir=68500)
         hr = random.randint(72, 88)
         spo2 = random.randint(97, 99)
-        self._timer = threading.Timer(3.5, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=69000))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=69000))
         self._timer.daemon = True
         self._timer.start()
 
@@ -136,7 +136,7 @@ class MockHardwareController:
         self.engine.start_session(ir=67000)
         hr = random.randint(104, 112)
         spo2 = 95
-        self._timer = threading.Timer(3.5, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=67500))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=67500))
         self._timer.daemon = True
         self._timer.start()
 
@@ -145,7 +145,7 @@ class MockHardwareController:
         self.engine.start_session(ir=66000)
         hr = 125
         spo2 = 91
-        self._timer = threading.Timer(3.5, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=66500))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=66500))
         self._timer.daemon = True
         self._timer.start()
 
@@ -213,6 +213,12 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
     elapsed_state = info["elapsed_in_state"]
     elapsed_session = info["elapsed_in_session"]
 
+    # 0. HIỆU ỨNG CHỚP FLASH KHI CHỤP ẢNH SNAPSHOT
+    flash_t = info.get("flash_timer", 0.0)
+    if flash_t > 0 and (time.time() - flash_t) < 0.12:
+        white_overlay = np.full_like(vis, 255)
+        vis = cv2.addWeighted(white_overlay, 0.40, vis, 0.60, 0)
+
     # 1. TOP BANNER TRẠNG THÁI & PROGRESS BAR
     banner_h = 70
     overlay = vis.copy()
@@ -220,33 +226,35 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
     vis = cv2.addWeighted(overlay, 0.85, vis, 0.15, 0)
 
     # Tiêu đề trạng thái & Màu chủ đạo
+    state_name = getattr(state, "name", str(state))
     if state == SessionState.IDLE:
-        state_text = "SẴN SÀNG CHẤM CÔNG"
+        state_text = "SẴN SÀNG CHẤM CÔNG (CHẾ ĐỘ 3 ẢNH RỜI RẠC)"
         state_rgb = RGB_COLORS["SKY"]
         state_bgr = (233, 165, 14)
-        sub_text = "Đặt ngón tay lên cảm biến hoặc bấm [1] để quét  |  [Q] Thoát"
+        sub_text = "Đặt ngón tay lên cảm biến hoặc bấm [1] để chụp 3 ảnh (cách nhau 300ms)  |  [Q] Thoát"
         prog_ratio = 0.0
 
-    elif state == SessionState.WARMUP:
-        state_text = f"ĐANG KHỞI ĐỘNG CẢM BIẾN ({elapsed_state:.1f}s / 1.2s)"
+    elif state_name in ["CAPTURING", "WARMUP", "SCANNING"]:
+        count = info.get("captured_count", 0)
+        state_text = f"ĐANG CHỤP 3 ẢNH RỜI RẠC: ẢNH {count}/3"
         state_rgb = RGB_COLORS["YELLOW"]
         state_bgr = (11, 158, 245)
-        sub_text = "Vui lòng nhìn thẳng vào camera và giữ ngón tay trên cảm biến..."
-        prog_ratio = min(1.0, elapsed_state / 1.2)
+        sub_text = f"Chụp tại T = 0ms, 300ms, 600ms (Camera không lấy ảnh liên tục) • Đã lấy {count}/3 ảnh"
+        prog_ratio = count / 3.0
 
-    elif state == SessionState.SCANNING:
-        state_text = f"ĐANG QUÉT NHẬN DIỆN... ({elapsed_session:.1f}s)"
-        state_rgb = RGB_COLORS["EMERALD"]
-        state_bgr = (129, 185, 16)
-        sub_text = "Đang đối chiếu khuôn mặt và phân tích chỉ số thể trạng realtime..."
-        prog_ratio = min(1.0, elapsed_session / 3.5)
+    elif state_name == "PROCESSING":
+        state_text = "ĐANG PHÂN TÍCH 2 AI TRÊN 3 ẢNH..."
+        state_rgb = RGB_COLORS["CYAN"]
+        state_bgr = (255, 220, 0)
+        sub_text = "AI 1 lọc ảnh nét nhất • AI 2 phân tích động học cử động 3 mốc thời gian"
+        prog_ratio = 1.0
 
     elif state == SessionState.COMPLETED:
         remain_s = max(0.0, 5.0 - elapsed_state)
         state_text = f"HOÀN TẤT ĐIỂM DANH (Tự đóng sau {remain_s:.1f}s)"
         state_rgb = RGB_COLORS["EMERALD"]
         state_bgr = (129, 185, 16)
-        sub_text = "Đã lưu kết quả thành công và đồng bộ lên Web."
+        sub_text = "Đã lưu 3 ảnh bằng chứng và đồng bộ dữ liệu lên CSDL Web."
         prog_ratio = 1.0
 
     else:  # ABORTED
@@ -315,6 +323,34 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
     cv2.rectangle(panel_overlay, (sx1, sy1), (sx1 + stats_w, sy1 + stats_h), COLORS["DARK_BG"], -1)
     vis = cv2.addWeighted(panel_overlay, 0.85, vis, 0.15, 0)
     cv2.rectangle(vis, (sx1, sy1), (sx1 + stats_w, sy1 + stats_h), (48, 58, 75), 1)
+
+    # 3b. KHUNG HIỂN THỊ 3 ẢNH SNAPSHOT (GÓC DƯỚI BÊN PHẢI)
+    cap_frames = info.get("captured_frames", [])
+    has_snaps = len(cap_frames) > 0 and state != SessionState.COMPLETED
+    snap_box_info = None
+    if has_snaps:
+        box_w = 340
+        box_h = 115
+        bx1 = w - box_w - 15
+        by1 = h - stats_h - 15
+        snap_overlay = vis.copy()
+        cv2.rectangle(snap_overlay, (bx1, by1), (bx1 + box_w, by1 + box_h), COLORS["DARK_BG"], -1)
+        vis = cv2.addWeighted(snap_overlay, 0.85, vis, 0.15, 0)
+        cv2.rectangle(vis, (bx1, by1), (bx1 + box_w, by1 + box_h), (48, 58, 75), 1)
+
+        thumb_w, thumb_h = 96, 68
+        pad_x = 14
+        pad_y = 34
+        for idx in range(3):
+            tx = bx1 + pad_x + idx * (thumb_w + 8)
+            ty = by1 + pad_y
+            if idx < len(cap_frames) and cap_frames[idx] is not None:
+                small = cv2.resize(cap_frames[idx], (thumb_w, thumb_h))
+                vis[ty:ty+thumb_h, tx:tx+thumb_w] = small
+                cv2.rectangle(vis, (tx, ty), (tx + thumb_w, ty + thumb_h), (46, 204, 113), 1)
+            else:
+                cv2.rectangle(vis, (tx, ty), (tx + thumb_w, ty + thumb_h), (50, 60, 75), 1)
+        snap_box_info = (bx1, by1, box_w, box_h)
 
     m = info.get("latest_metrics", {})
     ear_v = m.get("ear", 0.0)
@@ -429,12 +465,21 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         draw.text((bx_txt, by_id), bbox_info["label_id"], font=HUD_FONTS["bbox_name"], fill=RGB_COLORS["WHITE"])
         draw.text((bx_txt, by_st), bbox_info["label_st"], font=HUD_FONTS["bbox_sub"], fill=bbox_info["box_rgb"])
 
-    # 5.3 Vẽ chữ Bảng Thống số Realtime (Cực kỳ tinh gọn)
-    draw.text((sx1 + 14, sy1 + 10), "THÔNG SỐ REALTIME", font=HUD_FONTS["panel_title"], fill=RGB_COLORS["SKY"])
+    # 5.3 Vẽ chữ Bảng Thông số Realtime (Cực kỳ tinh gọn)
+    draw.text((sx1 + 14, sy1 + 10), "THÔNG SỐ PHIÊN 3 ẢNH", font=HUD_FONTS["panel_title"], fill=RGB_COLORS["SKY"])
     draw.text((sx1 + stats_w - 75, sy1 + 10), f"FPS: {fps:.0f}", font=HUD_FONTS["panel_title"], fill=RGB_COLORS["GRAY"])
     draw.text((sx1 + 14, sy1 + 34), f"Mắt (EAR): {ear_v:.3f}   •   Miệng (MAR): {mar_v:.3f}", font=HUD_FONTS["panel_body"], fill=RGB_COLORS["LIGHT_GRAY"])
     draw.text((sx1 + 14, sy1 + 58), f"Độ nét: {sharp_v:.1f}      •   Góc đầu: {pitch_v:.0f}°/{yaw_v:.0f}°", font=HUD_FONTS["panel_body"], fill=RGB_COLORS["LIGHT_GRAY"])
-    draw.text((sx1 + 14, sy1 + 86), "[1] Chấm công   •   [Q] Thoát", font=HUD_FONTS["panel_sub"], fill=RGB_COLORS["MUTED"])
+    draw.text((sx1 + 14, sy1 + 86), "[1] Chụp 3 ảnh   •   [Q] Thoát", font=HUD_FONTS["panel_sub"], fill=RGB_COLORS["MUTED"])
+
+    # 5.3b Vẽ chữ Thẻ 3 Ảnh Snapshot (Góc dưới bên phải)
+    if snap_box_info is not None:
+        sbx, sby, sbw, sbh = snap_box_info
+        draw.text((sbx + 14, sby + 10), "3 ẢNH RỜI RẠC (MỖI 300MS)", font=HUD_FONTS["panel_title"], fill=RGB_COLORS["CYAN"])
+        snap_labels = ["#1: 0ms", "#2: 300ms", "#3: 600ms"]
+        for idx in range(3):
+            tx = sbx + 14 + idx * (96 + 8)
+            draw.text((tx, sby + 104), snap_labels[idx], font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
 
     # 5.4 Vẽ chữ Thẻ Kết quả Trung tâm (Completed Modal)
     if modal_info is not None:

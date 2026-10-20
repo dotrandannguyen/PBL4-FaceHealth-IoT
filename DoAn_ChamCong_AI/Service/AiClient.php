@@ -36,26 +36,7 @@ final class AiClient
 
     private function requestJson(string $method, string $path): array
     {
-        $context = stream_context_create([
-            'http' => [
-                'method' => $method,
-                'header' => "Accept: application/json\r\nContent-Type: application/json\r\n",
-                'content' => $method === 'POST' ? '{}' : '',
-                'timeout' => $method === 'POST' ? 30 : 4,
-                'ignore_errors' => true,
-            ],
-        ]);
-        $body = @file_get_contents($this->baseUrl . $path, false, $context);
-        if (!is_string($body)) {
-            throw new RuntimeException('AI service is unavailable.');
-        }
-
-        $response = json_decode($body, true);
-        if (!is_array($response)) {
-            throw new RuntimeException('AI service returned an invalid response.');
-        }
-
-        return $response;
+        return $this->send($method, $path, $method === 'POST' ? '{}' : '', $method === 'POST' ? 30 : 4);
     }
 
     private function requestEnrollmentJson(string $path, string $jpeg, string $expectedPose): array
@@ -64,23 +45,35 @@ final class AiClient
             'image' => base64_encode($jpeg),
             'expected_pose' => $expectedPose,
         ], JSON_THROW_ON_ERROR);
+        return $this->send('POST', $path, $content, 20, true);
+    }
+
+    private function send(string $method, string $path, string $content, int $timeout, bool $allowRejection = false): array
+    {
         $context = stream_context_create([
             'http' => [
-                'method' => 'POST',
-                'header' => "Accept: application/json\r\nContent-Type: application/json\r\n",
+                'method' => $method,
+                'header' => "Accept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer " . (getenv('PBL4_INTERNAL_TOKEN') ?: '') . "\r\n",
                 'content' => $content,
-                'timeout' => 20,
+                'timeout' => $timeout,
                 'ignore_errors' => true,
+                'follow_location' => 0,
             ],
         ]);
-        $body = @file_get_contents($this->baseUrl . $path, false, $context);
-        if (!is_string($body)) {
+        $body = @file_get_contents($this->baseUrl . $path, false, $context, 0, 8 * 1024 * 1024 + 1);
+        if (!is_string($body) || strlen($body) > 8 * 1024 * 1024) {
             throw new RuntimeException('AI service is unavailable.');
         }
-
+        $status = 0;
+        foreach ($http_response_header ?? [] as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/', $header, $matches)) {
+                $status = (int)$matches[1];
+            }
+        }
         $response = json_decode($body, true);
-        if (!is_array($response)) {
-            throw new RuntimeException('AI service returned an invalid enrollment response.');
+        if (!is_array($response) || !is_bool($response['success'] ?? null)
+            || ($status !== 200 && !($allowRejection && $status === 409 && $response['success'] === false))) {
+            throw new RuntimeException('AI service returned an invalid response.');
         }
 
         return $response;

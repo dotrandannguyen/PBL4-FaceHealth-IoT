@@ -4,20 +4,19 @@ declare(strict_types=1);
 require_once __DIR__ . '/../Model/AttendanceModel.php';
 require_once __DIR__ . '/AuthController.php';
 require_once __DIR__ . '/../Service/AttendanceService.php';
-require_once __DIR__ . '/../Service/CameraFrameClient.php';
 require_once __DIR__ . '/../Security/CsrfToken.php';
+require_once __DIR__ . '/../Security/InternalApi.php';
+require_once __DIR__ . '/../Service/AttendancePayload.php';
 
 final class AttendanceController
 {
     private AttendanceModel $attendance;
     private AttendanceService $service;
-    private CameraFrameClient $camera;
 
     public function __construct()
     {
         $this->attendance = new AttendanceModel();
         $this->service = new AttendanceService();
-        $this->camera = new CameraFrameClient();
     }
 
     /** Lọc và phân trang dữ liệu chấm công theo ngày, nhân viên hoặc từ khóa. */
@@ -110,7 +109,7 @@ final class AttendanceController
         } catch (Throwable $exception) {
             error_log('Attendance page read failed: ' . $exception->getMessage());
             http_response_code(500);
-            $error = 'Không thể tải dữ liệu chấm công. Vui lòng kiểm tra kết nối cơ sở dữ liệu.';
+            $error = 'Không thể tải dữ liệu chấm công. Vui lòng thử lại sau.';
         }
 
         $isDaily = $fromDate === $toDate;
@@ -158,90 +157,50 @@ final class AttendanceController
         echo $image;
     }
 
-    /** Xử lý API chấm công: đọc MaNV/MaTB, lấy ảnh từ camera nội bộ và giao nghiệp vụ cho service. */
+    /** Validate an authenticated event and preserve the evidence supplied with it. */
     public function recordApi(): void
     {
-        $data = json_decode((string)file_get_contents('php://input'), true);
-        if (!is_array($data) || $data === []) {
-            $this->jsonResponse(['status' => 'error', 'message' => 'No JSON body'], 400);
+        if (!InternalApi::requireAuthorized()) {
             return;
         }
-
-        if (!array_key_exists('MaNV', $data) || $data['MaNV'] === null || $data['MaNV'] === '') {
-            $this->jsonResponse(['status' => 'error', 'message' => 'Thiếu MaNV'], 400);
+        // Release the PHP session before camera/network/database processing.
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        $mediaType = strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0]));
+        if ($mediaType !== 'application/json') {
+            $this->jsonResponse(['status' => 'error', 'message' => 'Content-Type phải là application/json.'], 415);
             return;
         }
-        $employeeId = filter_var($data['MaNV'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-        $deviceId = filter_var($data['MaTB'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-        if (!is_int($employeeId) || !is_int($deviceId)) {
-            $this->jsonResponse(['status' => 'error', 'message' => 'MaNV hoặc MaTB không hợp lệ'], 400);
+        if ((int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 8 * 1024 * 1024) {
+            $this->jsonResponse(['status' => 'error', 'message' => 'Payload quá lớn.'], 413);
             return;
         }
-
-        $image = null;
-        if (!empty($data['image'])) {
-            $image = base64_decode((string)$data['image'], true) ?: null;
+        $body = file_get_contents('php://input', false, null, 0, 8 * 1024 * 1024 + 1);
+        if (!is_string($body) || strlen($body) > 8 * 1024 * 1024) {
+            $this->jsonResponse(['status' => 'error', 'message' => 'Payload quá lớn.'], 413);
+            return;
         }
-        if ($image === null) {
-            $image = $this->camera->captureJpeg();
-        }
-
-        $rawStatus = (string)($data['TrangThai'] ?? 'Normal');
-        $statusLabel = 'Bình thường';
-        $maBieuHien = 1;
-        if (stripos($rawStatus, 'Exhaust') !== false || stripos($rawStatus, 'Kiệt') !== false) {
-            $statusLabel = 'Kiệt sức';
-            $maBieuHien = 3;
-        } elseif (stripos($rawStatus, 'Fatigue') !== false || stripos($rawStatus, 'Mệt') !== false) {
-            $statusLabel = 'Mệt mỏi';
-            $maBieuHien = 2;
-        }
-
-        $result = $this->service->process($employeeId, $deviceId, $image, $statusLabel);
-
-        // Luu them chi so suc khoe vao DB neu duoc gui kem tu he thong IoT/AI
-        if (($result['status'] ?? '') === 'success') {
-            $hr = isset($data['NhipTim']) ? (int)$data['NhipTim'] : null;
-            $spo2 = isset($data['SpO2']) ? (float)$data['SpO2'] : null;
-            if ($hr !== null || $spo2 !== null) {
-                try {
-                    require_once __DIR__ . '/../Model/HealthModel.php';
-                    $healthModel = new HealthModel();
-                    $healthModel->insertRecord($employeeId, $hr, $spo2, $statusLabel);
-                } catch (Throwable $e) {
-                    error_log('Health record insert failed: ' . $e->getMessage());
-                }
+        try {
+            $data = json_decode($body, true, 64, JSON_THROW_ON_ERROR);
+            if (!is_array($data) || $data === [] || array_keys($data) === range(0, count($data) - 1)) {
+                throw new InvalidArgumentException('JSON object không hợp lệ.');
             }
-
-            // Ghi nhan lich su trang thai va canh bao neu co
-            try {
-                $pdo = Database::getConnection();
-                $stmtTT = $pdo->prepare('INSERT INTO LichSuTrangThai (MaNV, MaBieuHien, ThoiGian) VALUES (:emp, :bh, CURRENT_TIMESTAMP(3))');
-                $stmtTT->execute(['emp' => $employeeId, 'bh' => $maBieuHien]);
-                $maTT = (int)$pdo->lastInsertId();
-
-                if ($maBieuHien === 3) {
-                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 2, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
-                        ->execute(['emp' => $employeeId, 'msg' => 'Kiệt sức / Buồn ngủ sâu khi chấm công', 'tt' => $maTT, 'tb' => $deviceId]);
-                } elseif ($maBieuHien === 2) {
-                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 2, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
-                        ->execute(['emp' => $employeeId, 'msg' => 'Phát hiện thể trạng mệt mỏi khi chấm công', 'tt' => $maTT, 'tb' => $deviceId]);
-                }
-
-                if ($spo2 !== null && $spo2 < 95.0) {
-                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 1, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
-                        ->execute(['emp' => $employeeId, 'msg' => "Nồng độ oxy SpO2 thấp bất thường ({$spo2}%)", 'tt' => $maTT, 'tb' => $deviceId]);
-                }
-                if ($hr !== null && ($hr > 110 || $hr < 50)) {
-                    $pdo->prepare('INSERT INTO CanhBao (MaNV, MaLoaiCB, NoiDung, ThoiGian, MaTT, MaTB) VALUES (:emp, 1, :msg, CURRENT_TIMESTAMP(3), :tt, :tb)')
-                        ->execute(['emp' => $employeeId, 'msg' => "Nhịp tim bất thường ({$hr} BPM)", 'tt' => $maTT, 'tb' => $deviceId]);
-                }
-            } catch (Throwable $e) {
-                error_log('Alert/Status insert failed: ' . $e->getMessage());
-            }
+            $event = AttendancePayload::fromArray($data);
+        } catch (JsonException | InvalidArgumentException $exception) {
+            $this->jsonResponse(['status' => 'error', 'message' => $exception->getMessage()], 400);
+            return;
         }
-
-        $this->jsonResponse($result, in_array($result['status'] ?? '', ['success', 'completed'], true) ? 200 : 400);
+        try {
+            $result = $this->service->processEvent($event);
+            $status = in_array($result['status'] ?? '', ['success', 'completed'], true)
+                ? 200 : ($result['http_status'] ?? 503);
+            unset($result['http_status']);
+            $this->jsonResponse($result, $status);
+        } catch (Throwable $exception) {
+            error_log('Attendance API unavailable: ' . $exception->getMessage());
+            $this->jsonResponse(['status' => 'error', 'message' => 'Dịch vụ chấm công chưa sẵn sàng.'], 503);
+        }
     }
 
     /** Xóa một phiên chấm công (chỉ Admin). */

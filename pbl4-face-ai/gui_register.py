@@ -2,8 +2,13 @@
 gui_register.py -- Giao dien GUI Dang ky Khuon mat Nhan vien
 '''
 
+from __future__ import annotations
+
 import sys
 import os
+from src.runtime_config import load_environment
+
+load_environment()
 import time
 import threading
 from typing import Optional, List, Dict, Any
@@ -11,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
 import cv2
+from src.camera_source import open_camera
 import numpy as np
 import pickle
 from PIL import Image, ImageTk
@@ -53,108 +59,6 @@ def load_db():
             return pickle.load(f)
     return {}
 
-def save_db(db):
-    EMBEDDINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(EMBEDDINGS_PATH, 'wb') as f:
-        pickle.dump(db, f)
-
-def sync_user_to_mariadb(sid: str, sname: str, embeddings: list, save_dir: Path):
-    """Tự động đồng bộ nhân viên và 5 ảnh mẫu khuôn mặt vào CSDL MariaDB của Web."""
-    def _run():
-        try:
-            import pymysql
-            import base64
-            conn = pymysql.connect(
-                host="127.0.0.1",
-                port=3306,
-                user="pbl4_user",
-                password="pbl4_password",
-                database="DoAn_ChamCong_AI_MariaDB",
-                charset="utf8mb4",
-                autocommit=True,
-                connect_timeout=3,
-            )
-            cursor = conn.cursor()
-            num_str = "".join(filter(str.isdigit, sid))
-            emp_id = int(num_str) if num_str else 1
-            full_name = f"{sname} ({sid})" if sid not in sname else sname
-
-            cursor.execute(
-                """
-                INSERT INTO NhanVien (MaNV, HoTen, MaVaiTro)
-                VALUES (%s, %s, 2)
-                ON DUPLICATE KEY UPDATE HoTen = VALUES(HoTen)
-                """,
-                (emp_id, full_name),
-            )
-
-            cursor.execute("DELETE FROM FaceEmbedding WHERE MaNV = %s", (emp_id,))
-
-            sample_files = sorted(list(save_dir.glob("*.jpg"))) if save_dir.exists() else []
-            frontal_bytes = None
-
-            for idx, emb in enumerate(embeddings):
-                emb_norm = emb.astype(np.float32)
-                emb_norm = emb_norm / float(np.linalg.norm(emb_norm))
-                vec_bytes = emb_norm.tobytes()
-
-                img_bytes = None
-                if idx < len(sample_files):
-                    with open(sample_files[idx], "rb") as f_img:
-                        img_bytes = f_img.read()
-                    if frontal_bytes is None:
-                        frontal_bytes = img_bytes
-
-                cursor.execute(
-                    """
-                    INSERT INTO FaceEmbedding (MaNV, VectorData, AnhKhuonMat, SoChieu, ThoiGianTao)
-                    VALUES (%s, %s, %s, 512, NOW())
-                    """,
-                    (emp_id, vec_bytes, img_bytes),
-                )
-
-            if frontal_bytes is not None:
-                b64_avatar = "data:image/jpeg;base64," + base64.b64encode(frontal_bytes).decode("ascii")
-                cursor.execute("UPDATE NhanVien SET AnhKhuonMat = %s WHERE MaNV = %s", (b64_avatar, emp_id))
-
-            cursor.close()
-            conn.close()
-            print(f"[SyncMariaDB] ✅ Đã đồng bộ nhân viên {full_name} (MaNV={emp_id}) sang Web Database!")
-        except Exception as e:
-            print(f"[SyncMariaDB] ℹ️ Không thể đồng bộ sang MariaDB (Docker chưa bật?): {e}")
-
-    threading.Thread(target=_run, daemon=True).start()
-
-def delete_user_from_mariadb(sid: str):
-    """Xóa embedding nhân viên trong CSDL MariaDB."""
-    def _run():
-        try:
-            import pymysql
-            num_str = "".join(filter(str.isdigit, sid))
-            if not num_str:
-                return
-            emp_id = int(num_str)
-            conn = pymysql.connect(
-                host="127.0.0.1",
-                port=3306,
-                user="pbl4_user",
-                password="pbl4_password",
-                database="DoAn_ChamCong_AI_MariaDB",
-                charset="utf8mb4",
-                autocommit=True,
-                connect_timeout=3,
-            )
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM FaceEmbedding WHERE MaNV = %s", (emp_id,))
-            cursor.close()
-            conn.close()
-            print(f"[SyncMariaDB] ✅ Đã xóa dữ liệu khuôn mặt MaNV={emp_id} khỏi Web Database!")
-        except Exception:
-            pass
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
 class RegisterApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -173,10 +77,19 @@ class RegisterApp(tk.Tk):
         self.flash_timer = 0
         self.is_capturing = False
         self.capture_done = False
+        from src.desktop_enrollment import DesktopEnrollment
+        from src.ui_worker import UiWorker
+        self.store = DesktopEnrollment()
+        self.io = UiWorker(self)
+        self.sync_busy = False
+        self.samples_collected = []
+        self.frame_timer = None
+        self._canvas_image = None
         self._build_ui()
         self._load_engine_async()
         self._open_webcam()
         self._poll_frame()
+        self._refresh_from_web()
 
     def _build_ui(self):
         hdr = tk.Frame(self, bg=PANEL_BG, height=56)
@@ -244,7 +157,7 @@ class RegisterApp(tk.Tk):
         self.name_entry.grid(row=2, column=1, sticky='ew', padx=(8, 0))
         tk.Label(card, text='So anh:', font=FONT_MAIN, bg=CARD_BG, fg=TEXT_DIM).grid(row=3, column=0, sticky='w', pady=3)
         self.n_samples_var = tk.IntVar(value=5)
-        tk.Spinbox(card, from_=3, to=10, textvariable=self.n_samples_var, font=FONT_MAIN,
+        tk.Spinbox(card, from_=5, to=5, state='disabled', textvariable=self.n_samples_var, font=FONT_MAIN,
                    bg='#21262d', fg=TEXT_MAIN, relief='flat', bd=4, width=5).grid(row=3, column=1, sticky='w', padx=(8,0))
         card.columnconfigure(1, weight=1)
 
@@ -280,6 +193,10 @@ class RegisterApp(tk.Tk):
         tk.Button(btn_frame, text='Reset / Huy', font=FONT_MAIN, bg='#30363d', fg=TEXT_DIM,
                   relief='flat', bd=0, padx=14, pady=6, cursor='hand2',
                   command=self._reset_session).pack(fill='x')
+        tk.Button(btn_frame, text='Thử đồng bộ batch chờ', command=self._retry_sync,
+                  bg=ACCENT2, fg='white').pack(fill='x', pady=5)
+        tk.Button(btn_frame, text='Lưu trữ batch chờ của ID này', command=self._archive_pending,
+                  bg='#30363d', fg=TEXT_DIM).pack(fill='x', pady=5)
         self.bind('<space>', lambda e: self._manual_capture())
 
     def _build_list_card(self, parent):
@@ -291,7 +208,7 @@ class RegisterApp(tk.Tk):
         tk.Button(hdr, text='Xoa tat ca', font=FONT_SMALL, bg=RED_ALERT, fg='white',
                   relief='flat', bd=0, cursor='hand2', padx=6, command=self._delete_all).pack(side='right', padx=(0, 4))
         tk.Button(hdr, text='Lam moi', font=FONT_SMALL, bg=CARD_BG, fg=TEXT_DIM,
-                  relief='flat', bd=0, cursor='hand2', command=self._refresh_list).pack(side='right')
+                  relief='flat', bd=0, cursor='hand2', command=self._refresh_from_web).pack(side='right')
         cols = ('ID', 'Ten', 'Anh')
         self.tree = ttk.Treeview(card, columns=cols, show='headings', height=8, selectmode='browse')
         for col in cols:
@@ -304,47 +221,59 @@ class RegisterApp(tk.Tk):
         self._refresh_list()
 
     def _load_engine_async(self):
-        def _load():
-            try:
-                self.engine = FaceEngine(model_name='buffalo_sc')
-                self.engine_loading = False
-                self.status_var.set('InsightFace buffalo_sc san sang!')
-                self.btn_start.configure(state='normal')
-            except Exception as e:
-                self.engine_loading = False
-                self.status_var.set(f'Loi tai model: {e}')
+        def loaded(engine):
+            self.engine = engine
+            self.engine_loading = False
+            self.btn_start.configure(state='disabled' if self.sync_busy else 'normal')
+            self.status_var.set('InsightFace sẵn sàng; gallery chỉ chứa dữ liệu DB đã xác nhận.')
+        def failed(error):
+            self.engine_loading = False
+            self.status_var.set('Không tải được InsightFace. Kiểm tra môi trường/model.')
         self.btn_start.configure(state='disabled')
-        threading.Thread(target=_load, daemon=True).start()
+        self.io.submit(lambda: FaceEngine(model_name='buffalo_sc'), loaded, failed)
 
     def _open_webcam(self):
-        self.cap = cv2.VideoCapture(0)
-        if self.cap.isOpened():
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        from src.camera_source import FramePump
+        self.pump = FramePump(lambda: open_camera(0), lambda: self.engine)
 
     def _poll_frame(self):
         if not self.running:
             return
-        if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
-                vis = self._process_frame(frame)
-                self._show_frame(vis)
-        self.after(33, self._poll_frame)
+        try:
+            frame, faces = self.pump.snapshot()
+            if frame is not None:
+                self._show_frame(self._process_frame(frame, faces))
+            else:
+                self.ready_timer = 0
+                self.progress_var.set(0)
+                self.hint_var.set('Chưa có frame mới. Kiểm tra camera relay hoặc chọn local khi service đã dừng.')
+                if self._canvas_image is not None:
+                    self.cam_canvas.itemconfigure(self._canvas_image, image='')
+                    self._current_photo = None
+        except Exception:
+            self.ready_timer = 0
+            self.hint_var.set('Không xử lý được frame. Kiểm tra camera/model.')
+        self.frame_timer = self.after(33, self._poll_frame)
 
-    def _process_frame(self, frame):
+    def _process_frame(self, frame, faces):
         vis = frame.copy()
         h, w = frame.shape[:2]
         if self.engine is None or self.engine_loading:
             cv2.putText(vis, 'Dang tai InsightFace...', (30, h//2),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 215, 255), 2)
             return vis
-        if not self.is_capturing or self.capture_done:
+        if not self.is_capturing or self.capture_done or self.current_step >= 5:
             cv2.putText(vis, 'Nhan [Bat dau Dang ky] de bat dau', (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
             return vis
-        faces = self.engine.detect(frame)
-        has_face = len(faces) > 0
+        from src.enrollment_pose import POSES, estimate_pose, check_pose_match
+        has_face = False
+        if len(faces) == 1:
+            try:
+                detected, metrics = estimate_pose(faces[0].kps)
+                has_face = check_pose_match(POSES[self.current_step], detected, metrics)
+            except (ValueError, TypeError):
+                pass
         step_info = CAPTURE_STEPS[self.current_step % len(CAPTURE_STEPS)]
         step_hint = step_info['hint']
         for face in faces:
@@ -400,22 +329,38 @@ class RegisterApp(tk.Tk):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img_pil = Image.fromarray(frame_rgb).resize((cw, ch), Resampling.LANCZOS)
         img_tk = ImageTk.PhotoImage(img_pil)
-        self.cam_canvas.create_image(0, 0, anchor='nw', image=img_tk)
+        if self._canvas_image is None:
+            self._canvas_image = self.cam_canvas.create_image(0, 0, anchor='nw', image=img_tk)
+        else:
+            self.cam_canvas.itemconfigure(self._canvas_image, image=img_tk)
         self._current_photo = img_tk
 
     def _start_register(self):
+        if self.sync_busy or self.is_capturing:
+            return
         sid = self.id_var.get().strip(); sname = self.name_var.get().strip()
+        from src.face_sync import employee_id
+        try:
+            sid = f'SV{employee_id(sid):03d}'
+            self.id_var.set(sid)
+        except ValueError:
+            messagebox.showwarning('ID', 'Use a positive numeric ID, SV001 or NV001'); return
         if not sid:
             messagebox.showwarning('Thieu thong tin', 'Vui long nhap Student ID!'); return
         if not sname:
             messagebox.showwarning('Thieu thong tin', 'Vui long nhap ten nhan vien!'); return
         if self.engine is None:
             messagebox.showerror('Loi', 'Mo hinh InsightFace chua san sang!'); return
+        try:
+            self.enrollment_revision = self.store.revision(sid)
+        except Exception:
+            messagebox.showerror('Đồng bộ', 'Làm mới gallery từ DB trước khi bắt đầu đăng ký.')
+            return
         db = load_db()
         if sid in db:
             _msg = "Student ID '" + sid + "' da duoc dang ky (" + db[sid]['name'] + ").\nBan co muon ghi de khong?"
             if not messagebox.askyesno('ID da ton tai', _msg): return
-        self.current_step = 0; self.embeddings_collected.clear()
+        self.current_step = 0; self.embeddings_collected.clear(); self.samples_collected.clear()
         self.ready_timer = 0; self.flash_timer = 0
         self.is_capturing = True; self.capture_done = False; self.progress_var.set(0)
         self.btn_start.configure(state='disabled'); self.btn_capture.configure(state='normal')
@@ -425,53 +370,98 @@ class RegisterApp(tk.Tk):
         self._build_step_indicators()
 
     def _do_capture(self, frame, faces):
-        n_samples = self.n_samples_var.get()
-        if self.current_step >= n_samples or self.capture_done: return
-        if self.engine is None: return
-        emb = self.engine.embed(frame)
-        if emb is None: return
-        self.embeddings_collected.append(emb)
-        sid = self.id_var.get().strip()
-        save_dir = REGISTERED_DIR / sid; save_dir.mkdir(parents=True, exist_ok=True)
-        img_path = save_dir / f'{sid}_{self.current_step+1:03d}.jpg'
-        cv2.imwrite(str(img_path), frame)
-        self.current_step += 1; self.ready_timer = 0; self.flash_timer = 12; self.progress_var.set(0)
+        if self.current_step >= 5 or self.capture_done:
+            return
+        from src.enrollment_pose import POSES
+        from src.enrollment_samples import sample_from_frame
+        try:
+            sample = sample_from_frame(frame, faces, POSES[self.current_step],
+                self.samples_collected[0]['vector'] if self.samples_collected else None)
+        except (ValueError, TypeError):
+            self.ready_timer = 0
+            self.hint_var.set('Mẫu chưa hợp lệ: chỉ một mặt, đúng hướng và cùng người với mẫu đầu.')
+            return
+        self.samples_collected.append(sample)
+        self.embeddings_collected.append(sample['vector'])
+        self.current_step += 1
+        self.ready_timer = 0
+        self.flash_timer = 12
+        self.progress_var.set(0)
         self._build_step_indicators()
-        self.conf_var.set(f'Buoc {self.current_step}/{n_samples} OK - {img_path.name}')
-        self.status_var.set(f'Da chup buoc {self.current_step}/{n_samples}')
-        if self.current_step >= n_samples:
+        self.conf_var.set(f'Đã thu {self.current_step}/5 mẫu theo cặp ảnh/vector')
+        if self.current_step == 5:
             self._finalize_registration()
 
     def _manual_capture(self):
-        if not self.is_capturing or self.capture_done or self.flash_timer > 0: return
-        if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
-                faces = self.engine.detect(frame) if self.engine else []
-                if faces: self._do_capture(frame, faces)
-                else: self.hint_var.set('Khong thay mat - hay dua mat vao camera!')
+        if not self.is_capturing or self.capture_done or self.flash_timer > 0:
+            return
+        if self.current_step == 5:
+            self._finalize_registration()
+            return
+        frame, faces = self.pump.snapshot()
+        if frame is not None:
+            self._do_capture(frame, faces)
 
     def _finalize_registration(self):
-        self.capture_done = True; self.is_capturing = False
-        sid = self.id_var.get().strip(); sname = self.name_var.get().strip()
-        if not self.embeddings_collected:
-            messagebox.showerror('Loi', 'Khong thu thap duoc embedding nao!'); self._reset_session(); return
-        mean_emb = np.mean(self.embeddings_collected, axis=0)
-        mean_emb = mean_emb / np.linalg.norm(mean_emb)
-        db = load_db(); db[sid] = {'name': sname, 'embedding': mean_emb, 'n_images': len(self.embeddings_collected)}
-        save_db(db)
-        sync_user_to_mariadb(sid, sname, self.embeddings_collected, REGISTERED_DIR / sid)
-        self.btn_start.configure(state='normal'); self.btn_capture.configure(state='disabled')
-        self.id_entry.configure(state='normal'); self.name_entry.configure(state='normal')
-        self.progress_var.set(100)
-        self.hint_var.set(f'Dang ky thanh cong!\nID: {sid} | Ten: {sname}\nSo anh: {len(self.embeddings_collected)}')
-        self.status_var.set(f'Da luu {sname} ({sid}) vao database!')
-        self.conf_var.set(f'Embedding: 512-dim | Norm={np.linalg.norm(mean_emb):.4f}')
-        self._refresh_list()
-        messagebox.showinfo('Dang ky thanh cong!', f'Da dang ky:\n\nStudent ID : {sid}\nTen : {sname}\nSo anh OK : {len(self.embeddings_collected)}\n\nNhan vien san sang cham cong!')
+        try:
+            self.store.stage(self.id_var.get(), self.name_var.get(), list(self.samples_collected), self.enrollment_revision)
+        except Exception:
+            self.hint_var.set('Chưa lưu được batch. Giữ cửa sổ và bấm SPACE thử lưu lại; mẫu cũ chưa đổi.')
+            self.flash_timer = 0
+            return
+        self.capture_done = True
+        self.is_capturing = False
+        self.btn_capture.configure(state='disabled')
+        self.hint_var.set('Đã lưu batch chờ; chưa dùng các mẫu này để nhận diện.')
+        self._run_sync(self.store.retry)
+
+    def _run_sync(self, work):
+        if self.sync_busy or self.is_capturing:
+            return
+        self.sync_busy = True
+        self.btn_start.configure(state='disabled')
+        def finish(result):
+            self.sync_busy = False
+            self.btn_start.configure(state='normal' if self.engine else 'disabled')
+            self.id_entry.configure(state='normal')
+            self.name_entry.configure(state='normal')
+            self._refresh_list()
+            if isinstance(result, dict) and 'pending' in result:
+                message = result.get('message') or ('; '.join(result['errors']) if result['errors'] else 'Đã đồng bộ DB và gallery nhận diện.')
+                self.status_var.set(f"{message} Batch chờ: {result['pending']}")
+            else:
+                self.status_var.set('Đã làm mới gallery từ DB. Batch chưa xác nhận vẫn nằm riêng.')
+        def failed(error):
+            self.sync_busy = False
+            self.btn_start.configure(state='normal' if self.engine else 'disabled')
+            self.id_entry.configure(state='normal')
+            self.name_entry.configure(state='normal')
+            self.status_var.set('Chưa đồng bộ được. Gallery cũ và batch chờ được giữ; kiểm tra kết nối/cấu hình.')
+        self.io.submit(work, finish, failed)
+
+    def _retry_sync(self):
+        self._run_sync(self.store.retry)
+
+    def _refresh_from_web(self):
+        self._run_sync(self.store.refresh)
+
+    def _archive_pending(self):
+        sid = self.id_var.get().strip()
+        from src.face_sync import employee_id
+        try:
+            identity = employee_id(sid)
+        except ValueError:
+            messagebox.showwarning('ID', 'Nhập ID nhân viên có batch chờ.')
+            return
+        if self.sync_busy or self.is_capturing:
+            return
+        if messagebox.askyesno('Lưu trữ batch chờ', f'Ngừng thử lại batch chưa xác nhận của NV {identity}? Bản batch được giữ trong archived; DB không thay đổi.'):
+            self._run_sync(lambda: self.store.archive(identity))
 
     def _reset_session(self):
-        self.current_step = 0; self.embeddings_collected.clear()
+        if self.sync_busy:
+            return
+        self.current_step = 0; self.embeddings_collected.clear(); self.samples_collected.clear()
         self.ready_timer = 0; self.flash_timer = 0
         self.is_capturing = False; self.capture_done = False; self.progress_var.set(0)
         self.hint_var.set('Nhap thong tin va nhan [Bat dau Dang ky]'); self.conf_var.set('')
@@ -483,31 +473,54 @@ class RegisterApp(tk.Tk):
 
     def _refresh_list(self):
         for row in self.tree.get_children(): self.tree.delete(row)
-        for sid, info in load_db().items():
+        try:
+            gallery = load_db()
+        except Exception:
+            if self.__dict__.get('status_var') is not None:
+                self.status_var.set('Gallery cục bộ bị lỗi. Làm mới từ DB; file cũ được giữ nếu mất kết nối.')
+            return
+        for sid, info in gallery.items():
             self.tree.insert('', 'end', values=(sid, info['name'], info.get('n_images', '?')))
 
     def _delete_selected(self):
-        sel = self.tree.selection()
-        if not sel: messagebox.showinfo('Chu y', 'Hay chon mot nguoi trong danh sach!'); return
-        item = self.tree.item(sel[0]); sid, sname = item['values'][0], item['values'][1]
-        if messagebox.askyesno('Xac nhan xoa', "Xoa '" + str(sname) + "' (" + str(sid) + ") khoi he thong?"):
-            db = load_db(); db.pop(sid, None); save_db(db)
-            delete_user_from_mariadb(str(sid))
-            import shutil
-            if (REGISTERED_DIR / str(sid)).exists(): shutil.rmtree(REGISTERED_DIR / str(sid), ignore_errors=True)
-            self._refresh_list(); self.status_var.set("Da xoa " + str(sname) + " (" + str(sid) + ")")
+        if self.is_capturing or self.sync_busy:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            return
+        sid = str(self.tree.item(selected[0])['values'][0])
+        try:
+            revision = self.store.revision(sid)
+        except Exception:
+            messagebox.showerror('Đồng bộ', 'Làm mới gallery từ DB trước khi xóa.')
+            return
+        if messagebox.askyesno('Xác nhận', 'Xóa mẫu khuôn mặt của ' + sid + '? Giữ hồ sơ và lịch sử chấm công.'):
+            def work():
+                self.store.stage_delete(sid, revision)
+                return self.store.retry()
+            self._run_sync(work)
 
     def _delete_all(self):
-        db = load_db()
-        if not db: messagebox.showinfo('Thong bao', 'Database dang trong!'); return
-        if messagebox.askyesno('Xoa tat ca', f'Xoa TAT CA {len(db)} nhan vien khoi he thong?\nKhong the hoan tac!'):
-            import shutil; save_db({})
-            if REGISTERED_DIR.exists(): shutil.rmtree(REGISTERED_DIR, ignore_errors=True)
-            self._refresh_list(); self.status_var.set('Da xoa toan bo database.')
+        if self.is_capturing or self.sync_busy:
+            return
+        try:
+            identities = {sid: self.store.revision(sid) for sid in load_db()}
+        except Exception:
+            messagebox.showerror('Đồng bộ', 'Làm mới gallery từ DB trước khi xóa.')
+            return
+        if identities and messagebox.askyesno('Xác nhận', f'Xóa mẫu của {len(identities)} nhân viên trong danh sách?'):
+            def work():
+                for sid, revision in identities.items():
+                    self.store.stage_delete(sid, revision)
+                return self.store.retry()
+            self._run_sync(work)
 
     def on_close(self):
         self.running = False
-        if self.cap: self.cap.release()
+        if self.frame_timer:
+            self.after_cancel(self.frame_timer)
+        self.pump.close()
+        self.io.close()
         self.destroy()
 
 

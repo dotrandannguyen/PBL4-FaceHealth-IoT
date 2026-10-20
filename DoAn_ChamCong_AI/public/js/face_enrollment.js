@@ -58,6 +58,39 @@
         result.hidden = false;
     };
 
+    const retryGallery = document.createElement('button');
+    retryGallery.type = 'button';
+    retryGallery.textContent = 'Đồng bộ dữ liệu nhận diện AI';
+    retryGallery.className = 'button button--secondary';
+    result.after(retryGallery);
+    retryGallery.addEventListener('click', async () => {
+        retryGallery.disabled = true;
+        try {
+            const { response, payload } = await post('face_gallery_refresh');
+            if (!response.ok || !payload.success) throw new Error(payload.message || 'Chưa cập nhật được AI.');
+            showResult('Đã cập nhật dữ liệu nhận diện.', 'success');
+            retryGallery.hidden = true;
+            setTimeout(() => window.location.reload(), 700);
+        } catch (error) {
+            showResult(error.message, 'error');
+        } finally {
+            retryGallery.disabled = false;
+        }
+    });
+
+    const showSaved = (payload, message) => {
+        stopPosePolling();
+        setCamera(false);
+        root.hidden = true;
+        startButton.disabled = false;
+        if (deleteButton) deleteButton.disabled = false;
+        retryGallery.hidden = Boolean(payload.gallery_updated);
+        showResult(payload.gallery_updated ? message
+            : `${message} AI chưa cập nhật và có thể vẫn dùng dữ liệu nhận diện cũ. Hãy thử cập nhật lại.`,
+        payload.gallery_updated ? 'success' : 'warning');
+        if (payload.gallery_updated) setTimeout(() => window.location.reload(), 900);
+    };
+
     const renderStep = () => {
         const step = poses[captured];
         stepLabel.textContent = step
@@ -172,6 +205,7 @@
             renderStep();
             root.hidden = false;
             result.hidden = true;
+            retryGallery.hidden = true;
             setCamera(true);
             cancelButton.hidden = false;
             completeButton.hidden = true;
@@ -182,7 +216,8 @@
         } catch (error) {
             showResult(error.message, 'error');
         } finally {
-            startButton.disabled = false;
+            startButton.disabled = !root.hidden;
+            if (deleteButton) deleteButton.disabled = !root.hidden;
         }
     });
 
@@ -191,10 +226,7 @@
         try {
             const { response, payload } = await post('face_enrollment_complete');
             if (!response.ok || !payload.success) throw new Error(payload.message || 'Không thể lưu batch.');
-            showResult(payload.gallery_updated
-                ? 'Đã lưu 5 mẫu khuôn mặt và làm mới gallery AI.'
-                : 'Đã lưu 5 mẫu. Gallery AI chưa làm mới; dữ liệu cũ vẫn an toàn.', 'success');
-            setTimeout(() => window.location.reload(), 900);
+            showSaved(payload, 'Đã lưu 5 mẫu khuôn mặt vào DB.');
         } catch (error) {
             completeButton.disabled = false;
             showResult(error.message, 'error');
@@ -209,6 +241,8 @@
             // The PHP session expires automatically if cancellation cannot reach the server.
         }
         root.hidden = true;
+        startButton.disabled = false;
+        if (deleteButton) deleteButton.disabled = false;
         setCamera(false);
         showResult('Đã hủy phiên. Chưa có mẫu nào được lưu.', 'info');
     });
@@ -220,8 +254,7 @@
             try {
                 const { response, payload } = await post('face_registration_delete');
                 if (!response.ok || !payload.success) throw new Error(payload.message || 'Không thể xóa đăng ký.');
-                showResult('Đã xóa toàn bộ mẫu khuôn mặt.', 'success');
-                setTimeout(() => window.location.reload(), 700);
+                showSaved(payload, 'Đã xóa toàn bộ mẫu khuôn mặt trong DB.');
             } catch (error) {
                 deleteButton.disabled = false;
                 showResult(error.message, 'error');

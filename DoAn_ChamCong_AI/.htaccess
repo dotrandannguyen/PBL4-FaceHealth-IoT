@@ -1,6 +1,15 @@
+Options -Indexes
+<FilesMatch "(?i)\.(sql|env|ini|log|pkl|md|ya?ml)$">
+    Require all denied
+</FilesMatch>
+<Files "Dockerfile">
+    Require all denied
+</Files>
 <IfModule mod_rewrite.c>
     RewriteEngine On
     RewriteBase /
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteRule ^(?:migration|Model|Service|Security|Controller|View|tests|tools)(?:/|$) - [F,L,NC]
 
     # Khong rewrite neu la file hoac thu muc that (nhu /public/css, /public/js)
     RewriteCond %{REQUEST_FILENAME} !-f

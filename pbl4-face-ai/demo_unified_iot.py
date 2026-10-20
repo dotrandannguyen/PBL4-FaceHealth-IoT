@@ -9,7 +9,7 @@ Tính năng:
       [2]             : Giả lập phiên Mệt mỏi / Căng thẳng (Bio_Warning: HR 104-112, SpO2 96)
       [3]             : Giả lập phiên Nguy hiểm Y tế (Bio_Danger: HR 125, SpO2 91)
       [a]             : Giả lập Rút tay ra sớm (ABORT_SESSION)
-      [t]             : Kiểm thử Hard Timeout 7.0s (Không gửi DONE)
+      [t]             : Kiểm thử Timeout thiếu IoT (Không gửi DONE)
       [q]             : Thoát chương trình
   - Tùy chọn đọc cổng Serial thật từ ESP32: python demo_unified_iot.py --serial-port COM3
 """
@@ -37,6 +37,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("GLOG_minloglevel", "3")
 
 import cv2
+from src.camera_source import open_camera
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -123,36 +124,44 @@ class MockHardwareController:
         self._timer = None
 
     def trigger_normal(self):
+        session_id = self.engine.start_session(ir=68500)
+        if session_id is None:
+            return
         self.cancel_pending()
-        self.engine.start_session(ir=68500)
         hr = random.randint(72, 88)
         spo2 = random.randint(97, 99)
-        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=69000))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=69000, session_id=session_id))
         self._timer.daemon = True
         self._timer.start()
 
     def trigger_warning(self):
+        session_id = self.engine.start_session(ir=67000)
+        if session_id is None:
+            return
         self.cancel_pending()
-        self.engine.start_session(ir=67000)
         hr = random.randint(104, 112)
         spo2 = 95
-        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=67500))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=67500, session_id=session_id))
         self._timer.daemon = True
         self._timer.start()
 
     def trigger_danger(self):
+        session_id = self.engine.start_session(ir=66000)
+        if session_id is None:
+            return
         self.cancel_pending()
-        self.engine.start_session(ir=66000)
         hr = 125
         spo2 = 91
-        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=66500))
+        self._timer = threading.Timer(0.8, lambda: self.engine.done_session(hr=hr, spo2=spo2, ir_avg=66500, session_id=session_id))
         self._timer.daemon = True
         self._timer.start()
 
     def trigger_timeout_test(self):
+        session_id = self.engine.start_session(ir=65000)
+        if session_id is None:
+            return
         self.cancel_pending()
-        self.engine.start_session(ir=65000)
-        print("[MockIoT] Đã kích hoạt START_SESSION — Không gửi DONE để test Hard Timeout (7s)...")
+        print("[MockIoT] Đã kích hoạt START_SESSION — Không gửi DONE để test Timeout thiếu IoT...")
 
     def trigger_abort(self):
         self.cancel_pending()
@@ -167,44 +176,41 @@ def start_serial_listener(engine: UnifiedAttendanceEngine, port: str, baud: int 
         print("[Serial] ❌ Chưa cài thư viện pyserial. Vui lòng cài: pip install pyserial")
         return
 
+    stop = threading.Event()
+
     def listener():
         try:
-            print(f"[Serial] 🔌 Đang kết nối cổng {port} @ {baud} bps...")
-            ser = serial.Serial(port, baud, timeout=1.0)
-            time.sleep(1.5)
-            print(f"[Serial] ✅ Đã kết nối {port}. Đang đọc dữ liệu JSON...")
+            with serial.Serial(port, baud, timeout=0.2) as connection:
+                active_id = None
+                while not stop.is_set():
+                    line = connection.readline().decode("utf-8", errors="replace").strip()
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if not isinstance(data, dict):
+                            continue
+                        event = data.get("event")
+                        if event == "START_SESSION":
+                            accepted = engine.start_session(ir=data.get("ir", 0))
+                            if accepted:
+                                active_id = accepted
+                        elif event == "ABORT_SESSION" and active_id:
+                            engine.abort_session(data.get("reason", "FINGER_REMOVED"), session_id=active_id)
+                        elif event == "DONE_SESSION" and active_id:
+                            engine.done_session(data.get("hr", 0), data.get("spo2", 0),
+                                                data.get("ir_avg", 0), session_id=active_id)
+                    except (ValueError, TypeError):
+                        print("[Serial] Invalid event payload")
+        except Exception:
+            engine.abort_session("SERIAL_DISCONNECTED")
+            print("[Serial] Connection unavailable")
 
-            while True:
-                line = ser.readline().decode("utf-8", errors="ignore").strip()
-                if not line or not line.startswith("{"):
-                    continue
-
-                try:
-                    data = json.loads(line)
-                    event = data.get("event")
-                    if event == "START_SESSION":
-                        engine.start_session(ir=data.get("ir", 65000))
-                    elif event == "ABORT_SESSION":
-                        engine.abort_session(reason=data.get("reason", "FINGER_REMOVED"))
-                    elif event == "DONE_SESSION":
-                        engine.done_session(
-                            hr=int(data.get("hr", 0)),
-                            spo2=int(data.get("spo2", 0)),
-                            ir_avg=int(data.get("ir_avg", 0)),
-                        )
-                except Exception as e:
-                    print(f"[Serial] Lỗi parse JSON: {e}")
-
-        except Exception as e:
-            print(f"[Serial] ❌ Lỗi cổng Serial: {e}")
-
-    t = threading.Thread(target=listener, daemon=True)
-    t.start()
+    thread = threading.Thread(target=listener, daemon=True, name="iot-serial")
+    thread.start()
+    return stop, thread
 
 
-# -------------------------------------------------------------
-# CÁC HÀM VẼ GIAO DIỆN HUD OPENCV
-# -------------------------------------------------------------
 def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
     """Vẽ toàn bộ HUD thông tin, bounding box và overlay kết quả bằng tiếng Việt sắc nét."""
     vis = frame.copy()
@@ -242,8 +248,8 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         sub_text = f"Chụp tại T = 0ms, 300ms, 600ms (Camera không lấy ảnh liên tục) • Đã lấy {count}/3 ảnh"
         prog_ratio = count / 3.0
 
-    elif state_name == "PROCESSING":
-        state_text = "ĐANG PHÂN TÍCH 2 AI TRÊN 3 ẢNH..."
+    elif state_name in ("PROCESSING", "FINALIZING"):
+        state_text = "ĐANG LƯU VÀ ĐỒNG BỘ..." if state_name == "FINALIZING" else "ĐANG PHÂN TÍCH 2 AI TRÊN 3 ẢNH..."
         state_rgb = RGB_COLORS["CYAN"]
         state_bgr = (255, 220, 0)
         sub_text = "AI 1 lọc ảnh nét nhất • AI 2 phân tích động học cử động 3 mốc thời gian"
@@ -254,7 +260,7 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         state_text = f"HOÀN TẤT ĐIỂM DANH (Tự đóng sau {remain_s:.1f}s)"
         state_rgb = RGB_COLORS["EMERALD"]
         state_bgr = (129, 185, 16)
-        sub_text = "Đã lưu 3 ảnh bằng chứng và đồng bộ dữ liệu lên CSDL Web."
+        sub_text = (info.get("completed_record") or {}).get("attendance_msg", "Đã phân tích; kiểm tra trạng thái đồng bộ.")
         prog_ratio = 1.0
 
     else:  # ABORTED
@@ -576,12 +582,18 @@ def main():
     mock_iot = MockHardwareController(engine)
 
     # Nếu có cổng Serial thật
+    serial_listener = None
     if args.serial_port:
-        start_serial_listener(engine, args.serial_port, args.baud)
+        serial_listener = start_serial_listener(engine, args.serial_port, args.baud)
 
-    cap = cv2.VideoCapture(args.camera)
+    cap = open_camera(args.camera)
     if not cap.isOpened():
         print(f"[Demo] ❌ Không mở được camera index {args.camera}!")
+        if serial_listener is not None:
+            serial_listener[0].set()
+            serial_listener[1].join(timeout=1.0)
+        cap.release()
+        engine.close()
         return
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -592,7 +604,7 @@ def main():
     print("  [2]             : Bắt đầu phiên CĂNG THẲNG / TẬP THỂ DỤC (Bio_Warning)")
     print("  [3]             : Bắt đầu phiên CẢNH BÁO Y TẾ (Bio_Danger: HR cao, SpO2 tụt)")
     print("  [a]             : Rút tay ra sớm giữa chừng (Hủy phiên ABORT_SESSION)")
-    print("  [t]             : Kiểm thử Hard Timeout 7.0s (Không gửi gói DONE)")
+    print("  [t]             : Kiểm thử Timeout thiếu IoT (Không gửi gói DONE)")
     print("  [q]             : Thoát chương trình an toàn\n")
 
     prev_time = time.time()
@@ -638,6 +650,10 @@ def main():
                 mock_iot.trigger_timeout_test()
 
     finally:
+        if serial_listener is not None:
+            stop, thread = serial_listener
+            stop.set()
+            thread.join(timeout=1.0)
         mock_iot.cancel_pending()
         engine.close()
         cap.release()

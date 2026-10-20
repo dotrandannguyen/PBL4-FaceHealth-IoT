@@ -7,6 +7,7 @@ require_once __DIR__ . '/../Model/EmployeeModel.php';
 require_once __DIR__ . '/../Model/FaceEmbeddingModel.php';
 require_once __DIR__ . '/../Security/CsrfToken.php';
 require_once __DIR__ . '/../Service/AiClient.php';
+require_once __DIR__ . '/../Service/FaceSample.php';
 require_once __DIR__ . '/../Service/CameraFrameClient.php';
 
 final class FaceEnrollmentController
@@ -33,6 +34,7 @@ final class FaceEnrollmentController
     public function frame(): void
     {
         AuthController::requireAdmin();
+        session_write_close();
         $jpeg = $this->camera->captureJpeg();
         if (!is_string($jpeg) || strlen($jpeg) > self::MAX_IMAGE_BYTES) {
             http_response_code(503);
@@ -95,12 +97,13 @@ final class FaceEnrollmentController
             return;
         }
 
-        $pose = self::POSES[count($state['samples'])] ?? null;
+        $pose = isset($state['saved_result']) ? null : (self::POSES[count($state['samples'])] ?? null);
         if ($pose === null) {
             $this->jsonResponse(['success' => false, 'message' => 'Đã đủ 5 mẫu.'], 409);
             return;
         }
 
+        session_write_close();
         $jpeg = $this->cameraFrame();
         if ($jpeg === null) {
             $this->jsonResponse(['success' => false, 'message' => 'Camera chưa sẵn sàng.'], 503);
@@ -128,7 +131,7 @@ final class FaceEnrollmentController
             return;
         }
 
-        $pose = self::POSES[count($state['samples'])] ?? null;
+        $pose = isset($state['saved_result']) ? null : (self::POSES[count($state['samples'])] ?? null);
         if ($pose === null) {
             $this->jsonResponse(['success' => false, 'message' => 'Đã đủ 5 mẫu.'], 409);
             return;
@@ -146,8 +149,12 @@ final class FaceEnrollmentController
                 return;
             }
 
-            $vector = base64_decode((string)($result['vector'] ?? ''), true);
-            $image = base64_decode((string)($result['image_jpeg'] ?? ''), true);
+            if (($result['pose'] ?? null) !== $pose || !is_string($result['vector'] ?? null)
+                || !is_string($result['image_jpeg'] ?? null) || !is_string($result['image_sha256'] ?? null)) {
+                $this->jsonResponse(['success' => false, 'message' => 'Mẫu AI trả về không hợp lệ.'], 502);
+            }
+            $vector = base64_decode($result['vector'], true);
+            $image = base64_decode($result['image_jpeg'], true);
             if (!is_string($vector) || strlen($vector) !== 2048 || !is_string($image)
                 || $image === '' || strlen($image) > self::MAX_IMAGE_BYTES
                 || !hash_equals((string)($result['image_sha256'] ?? ''), hash('sha256', $image))
@@ -156,6 +163,10 @@ final class FaceEnrollmentController
                 return;
             }
 
+            FaceSample::vector($vector);
+            if (!empty($state['samples'])) {
+                FaceSample::requireSameIdentity($state['samples'][0]['vector'], $vector);
+            }
             $state['samples'][] = ['vector' => $vector, 'image' => $image, 'pose' => $pose];
             $_SESSION[self::SESSION_KEY][$employeeId] = $state;
             $this->jsonResponse([
@@ -165,6 +176,8 @@ final class FaceEnrollmentController
                 'pose' => $pose,
                 'complete' => count($state['samples']) === count(self::POSES),
             ]);
+        } catch (InvalidArgumentException $exception) {
+            $this->jsonResponse(['success' => false, 'message' => $exception->getMessage()], 409);
         } catch (Throwable $exception) {
             $this->jsonResponse(['success' => false, 'message' => 'Không thể ghi nhận mẫu khuôn mặt.'], 503);
         }
@@ -181,6 +194,9 @@ final class FaceEnrollmentController
         if ($state === null) {
             return;
         }
+        if (isset($state['saved_result'])) {
+            $this->jsonResponse($state['saved_result']);
+        }
         if (count($state['samples']) !== count(self::POSES)) {
             $this->jsonResponse(['success' => false, 'message' => 'Cần xác nhận đủ 5 góc trước khi lưu.'], 409);
             return;
@@ -188,32 +204,42 @@ final class FaceEnrollmentController
 
         try {
             $ids = $this->faceEmbeddings->replaceByEmployee($employeeId, $state['samples']);
-            if (!empty($state['samples'][0]['image'])) {
-                try {
-                    $avatar = 'data:image/jpeg;base64,' . base64_encode($state['samples'][0]['image']);
-                    Database::getConnection()->prepare('UPDATE NhanVien SET AnhKhuonMat = :avatar WHERE MaNV = :id')
-                        ->execute(['avatar' => $avatar, 'id' => $employeeId]);
-                } catch (Throwable $e) {
-                    error_log('Update NhanVien AnhKhuonMat failed: ' . $e->getMessage());
-                }
-            }
-            unset($_SESSION[self::SESSION_KEY][$employeeId]);
             $galleryUpdated = false;
             try {
                 $galleryUpdated = !empty($this->ai->refreshGallery()['success']);
             } catch (Throwable $exception) {
                 $galleryUpdated = false;
             }
-            $this->jsonResponse([
+            $result = [
                 'success' => true,
                 'saved' => count($ids),
                 'gallery_updated' => $galleryUpdated,
                 'message' => 'Đã lưu đủ 5 mẫu khuôn mặt.',
-            ]);
+            ];
+            // A lost response must not turn a successful save into an expired batch.
+            $_SESSION[self::SESSION_KEY][$employeeId] = ['started_at' => time(), 'samples' => [], 'saved_result' => $result];
+            $this->jsonResponse($result);
         } catch (Throwable $exception) {
             error_log('Face enrollment batch save failed: ' . $exception->getMessage());
             $this->jsonResponse(['success' => false, 'message' => 'Không thể lưu batch. Dữ liệu khuôn mặt cũ vẫn được giữ nguyên.'], 500);
         }
+    }
+
+    /** Retry gallery synchronization without collecting or saving another batch. */
+    public function refreshGallery(): void
+    {
+        $this->requestEmployeeId();
+        if (!$this->requirePostCsrf()) {
+            return;
+        }
+        session_write_close();
+        try {
+            $updated = ($this->ai->refreshGallery()['success'] ?? false) === true;
+        } catch (Throwable $exception) {
+            $updated = false;
+        }
+        $this->jsonResponse(['success' => $updated, 'gallery_updated' => $updated,
+            'message' => $updated ? 'Đã cập nhật dữ liệu nhận diện.' : 'Chưa cập nhật được AI. Dữ liệu DB đã lưu; hãy thử lại.'], $updated ? 200 : 503);
     }
 
     /** Hủy batch chưa hoàn tất mà không tác động tới các embedding đang lưu. */
@@ -316,8 +342,9 @@ final class FaceEnrollmentController
     {
         $mime = (new finfo(FILEINFO_MIME_TYPE))->buffer($image);
 
+        $size = @getimagesizefromstring($image);
         return in_array($mime, ['image/jpeg', 'image/png'], true)
-            && getimagesizefromstring($image) !== false;
+            && $size !== false && $size[0] * $size[1] <= 16000000;
     }
 
     private function requestEmployeeId(): int

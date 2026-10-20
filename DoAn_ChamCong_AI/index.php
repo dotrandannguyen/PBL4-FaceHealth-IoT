@@ -44,6 +44,12 @@ $deviceController = new DeviceController();
 $faceEnrollmentController = new FaceEnrollmentController();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = $_GET['action'] ?? 'index';
+if (!is_string($action)) {
+    http_response_code(400);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['status' => 'error', 'message' => 'Action không hợp lệ.']);
+    return;
+}
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 
 if ($requestPath === '/api/chamcong' || $action === 'chamcong') {
@@ -102,6 +108,7 @@ if ($action === 'face_registration_delete' && $method === 'POST') {
 }
 
 $faceEnrollmentActions = [
+    'face_gallery_refresh' => 'refreshGallery',
     'face_enrollment_start' => 'start',
     'face_enrollment_pose' => 'inspectPose',
     'face_enrollment_capture' => 'capture',

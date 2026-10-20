@@ -1,435 +1,305 @@
-"""
-unified_engine.py — Core Engine hợp nhất AI 1 (Face Recognition) & AI 2 (Status Detection)
-kết hợp dữ liệu Sinh trắc học IoT (MAX30102 qua ESP32).
+"""Three-snapshot attendance coordinator; inference and persistence use one worker.
 
-Kiến trúc:
-  - Máy trạng thái (State Machine): IDLE -> WARMUP (1.2s) -> SCANNING -> COMPLETED / ABORTED
-  - Xử lý bất đồng bộ (Multi-threading): AI 2 chạy liên tục trên Main Thread (30 FPS),
-    AI 1 (InsightFace) chạy ngầm trên Worker Thread để chống nghẽn CPU và sụt FPS.
-  - Bộ lọc chất lượng Frame (Sharpness Laplacian + Head Pose)
-  - Ma trận hợp nhất quyết định (Late Fusion Decision Matrix) 7 mức ưu tiên.
+Public events are serialized. Only update() accepts worker results and starts finalization.
+Camera preview continues while inference and HTTP run in the background.
 """
+from __future__ import annotations
 
-import os
-import sys
-import time
-import json
+import base64
 import enum
+import json
+import math
+import logging
+import os
+import re
 import threading
-from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-# Tắt cảnh báo C++ của TensorFlow/MediaPipe ghi vào STDERR làm đỏ console
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("GLOG_minloglevel", "3")
+from src.attendance_transport import AttendanceTransport
+from src.runtime_config import load_environment
+from src.sequence_features import SNAPSHOT_INTERVAL as STATUS_SNAPSHOT_INTERVAL, MAX_SNAPSHOT_GAP
 
-import cv2
-import numpy as np
+load_environment()
 
-# Đảm bảo đường dẫn import src luôn đúng
 CURRENT_DIR = Path(__file__).resolve().parent
-SRC_DIR = CURRENT_DIR / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-try:
-    from src.face_engine import FaceEngine
-    from src.verify import load_db, identify
-    from src.predict_status import StatusPredictor
-except ImportError:
-    from face_engine import FaceEngine  # type: ignore
-    from verify import load_db, identify  # type: ignore
-    from predict_status import StatusPredictor  # type: ignore
 
 
 class SessionState(enum.Enum):
     IDLE = "IDLE"
-    CAPTURING = "CAPTURING"    # Chụp 3 ảnh cách nhau 300ms
-    PROCESSING = "PROCESSING"  # Đang phân tích 2 AI & đợi dữ liệu IoT
+    CAPTURING = "CAPTURING"
+    PROCESSING = "PROCESSING"
+    FINALIZING = "FINALIZING"
     COMPLETED = "COMPLETED"
     ABORTED = "ABORTED"
-    # Giữ alias để tương thích ngược nếu có module gọi
     WARMUP = "CAPTURING"
     SCANNING = "CAPTURING"
 
 
 class UnifiedAttendanceEngine:
-    """
-    Bộ điều phối hợp nhất Chấm công Thông minh theo cơ chế Snapshot 3 ảnh rời rạc (cách nhau 300ms).
-    Camera không lấy ảnh liên tục: Chỉ mở chụp đúng 3 frame (0ms, 300ms, 600ms) rồi dừng.
-    """
+    SNAPSHOT_INTERVAL = STATUS_SNAPSHOT_INTERVAL
+    TOTAL_SNAPSHOTS = 3
+    COMPLETED_DISPLAY_SEC = 5.0
+    ABORTED_DISPLAY_SEC = 2.5
+    HARD_TIMEOUT_SEC = 6.0
+    IOT_TIMEOUT_SEC = 3.5
 
-    SNAPSHOT_INTERVAL = 0.30    # Khoảng cách giữa các ảnh (300ms)
-    TOTAL_SNAPSHOTS = 3         # Đúng 3 ảnh rời rạc
-    COMPLETED_DISPLAY_SEC = 5.0 # Giữ màn hình kết quả 5 giây trước khi về IDLE
-    ABORTED_DISPLAY_SEC = 2.5   # Giữ màn hình lỗi trước khi về IDLE
-    HARD_TIMEOUT_SEC = 6.0      # Giới hạn thời gian tối đa của 1 phiên
-
-    def __init__(
-        self,
-        logs_dir: Optional[Path] = None,
-        face_threshold: float = 0.45,
-    ):
-        self.logs_dir = logs_dir or (CURRENT_DIR / "logs")
+    def __init__(self, logs_dir=None, face_threshold=0.45, *, face_engine=None,
+                 status_predictor=None, analyzer=None, transport=None, clock=None):
+        if not math.isfinite(face_threshold) or not 0 < face_threshold <= 1:
+            raise ValueError("Face threshold must be in (0, 1]")
+        self.logs_dir = Path(logs_dir) if logs_dir is not None else CURRENT_DIR / "logs"
         self.snapshots_dir = self.logs_dir / "snapshots"
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_log_path = self.logs_dir / "attendance_logs.jsonl"
-        self.web_api_url: str = os.environ.get("PBL4_WEB_API", "http://localhost:8080/api/chamcong")
-
-        # Khởi tạo AI 1 & AI 2
-        print("[UnifiedEngine] Đang nạp mô hình AI 1 (InsightFace buffalo_sc)...")
-        self.face_engine = FaceEngine(model_name="buffalo_sc")
+        self.web_api_url = os.environ.get("PBL4_WEB_API", "http://localhost:8080/api/chamcong")
+        self.transport = transport or AttendanceTransport(self.logs_dir / "pending", self.web_api_url)
+        if face_engine is None:
+            from src.face_engine import FaceEngine
+            face_engine = FaceEngine(model_name="buffalo_sc")
+        if status_predictor is None:
+            from src.predict_status import StatusPredictor
+            status_predictor = StatusPredictor(smoothing_window=5, max_yaw_deg=25.0)
+        self.face_engine = face_engine
         self.face_threshold = face_threshold
-        # Load cache DB embeddings một lần
-        load_db(force_reload=True)
-
-        print("[UnifiedEngine] Đang nạp mô hình AI 2 (MediaPipe Face Mesh + Random Forest)...")
-        self.status_predictor = StatusPredictor(smoothing_window=5, max_yaw_deg=25.0)
-
-        # Quản lý State Machine
+        self.status_predictor = status_predictor
+        self._analyzer = analyzer or self._analyze_snapshots
+        self._clock = clock or time.monotonic
+        self._lock = threading.RLock()
+        self._log_lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="attendance")
+        self._retry_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="attendance-retry")
+        self._future = None
+        self._retry_future = None
+        self._next_retry = self._clock() + 30
+        self._closed = False
         self.state = SessionState.IDLE
-        self.state_enter_time = time.time()
+        self.state_enter_time = self._clock()
         self.session_start_time = 0.0
+        self.session_id = None
+        self.last_completed_record = None
+        self._clear_session()
 
-        # Bộ nhớ đệm 3 ảnh rời rạc
-        self.captured_frames: List[np.ndarray] = []
-        self.captured_timestamps: List[float] = []
-        self.captured_sharpness: List[float] = []
+    def _clear_session(self):
+        self.captured_frames = []
+        self.captured_timestamps = []
+        self.captured_sharpness = []
         self.last_capture_time = 0.0
         self.flash_timer = 0.0
         self.iot_done_received = False
         self.ai_processed = False
-
-        # Bộ nhớ đệm phiên chấm công
-        self.session_status_history: List[str] = []
-        self.best_frame_score = -1.0
-        self.best_frame_bgr: Optional[np.ndarray] = None
-        self.latest_face_metrics: Dict[str, float] = {
-            "ear": 0.0, "mar": 0.0, "pitch": 0.0, "yaw": 0.0, "sharpness": 0.0
-        }
-        # Bộ đệm 3 ảnh bằng chứng: [Ảnh 1 (0ms), Ảnh nét nhất, Ảnh 3 (600ms)]
-        self.evidence_frames: List[Optional[np.ndarray]] = [None, None, None]
-        self.face_bbox: Optional[Tuple[int, int, int, int]] = None
-
-        # Kết quả AI 1 trong phiên
-        self.identified_id: Optional[str] = None
-        self.identified_name: str = "Chưa xác định"
-        self.identity_sim: float = 0.0
-        self.identity_matched: bool = False
-
-        # Dữ liệu IoT
-        self.iot_hr: int = 0
-        self.iot_spo2: int = 0
-        self.iot_ir_avg: int = 0
-        self.abort_reason: str = ""
-
-        # Kết quả cuối cùng
-        self.last_completed_record: Optional[Dict[str, Any]] = None
-
-    def start_session(self, ir: int = 0) -> None:
-        """
-        Nhận sự kiện START_SESSION từ ESP32 hoặc Mock Trigger.
-        Bắt đầu chu kỳ chụp đúng 3 ảnh rời rạc (cách nhau 300ms).
-        """
-        if self.state in [SessionState.CAPTURING, SessionState.PROCESSING]:
-            return  # Đang trong phiên, bỏ qua trigger trùng
-
-        now = time.time()
-        self.state = SessionState.CAPTURING
-        self.state_enter_time = now
-        self.session_start_time = now
-
-        # Reset toàn bộ dữ liệu đệm phiên
-        self.captured_frames.clear()
-        self.captured_timestamps.clear()
-        self.captured_sharpness.clear()
-        self.last_capture_time = 0.0
-        self.flash_timer = 0.0
-        self.iot_done_received = False
-        self.ai_processed = False
-
-        self.session_status_history.clear()
+        self.ai2_valid = False
+        self.ai2_confidence = 0.0
+        self.ai2_message = "Chưa phân tích"
+        self.session_status_history = []
         self.best_frame_score = -1.0
         self.best_frame_bgr = None
         self.evidence_frames = [None, None, None]
         self.face_bbox = None
-
         self.identified_id = None
-        self.identified_name = "Scanning Identity..."
+        self.identified_name = "Chưa xác định"
         self.identity_sim = 0.0
         self.identity_matched = False
-
-        self.iot_hr = 0
-        self.iot_spo2 = 0
-        self.iot_ir_avg = ir
+        self.iot_hr = self.iot_spo2 = self.iot_ir_avg = 0
         self.abort_reason = ""
-        self.status_predictor.reset()
+        self.latest_face_metrics = dict(ear=0.0, mar=0.0, pitch=0.0, yaw=0.0, sharpness=0.0)
 
-        print(f"[UnifiedEngine] 🚀 BẮT ĐẦU PHIÊN CHỤP 3 ẢNH RỜI RẠC (Mỗi ảnh cách 300ms) | IR={ir}")
+    def start_session(self, ir=0):
+        with self._lock:
+            if self._closed or self.state != SessionState.IDLE:
+                return None
+            if self._future is not None and not self._future.done():
+                return None
+            if isinstance(ir, bool) or not isinstance(ir, (int, float)) or not math.isfinite(ir) or ir < 0:
+                return None
+            self._clear_session()
+            self.status_predictor.reset()
+            self.session_id = str(uuid4())
+            self.occurred_at = datetime.now(timezone(timedelta(hours=7))).isoformat(timespec="milliseconds")
+            self.state = SessionState.CAPTURING
+            self.state_enter_time = self.session_start_time = self._clock()
+            self.iot_ir_avg = ir
+            return self.session_id
 
-    def abort_session(self, reason: str = "FINGER_REMOVED") -> None:
-        """
-        Nhận sự kiện ABORT_SESSION (người dùng rút tay ra sớm hoặc lỗi kết nối).
-        """
-        if self.state in [SessionState.CAPTURING, SessionState.PROCESSING]:
-            self.state = SessionState.ABORTED
-            self.state_enter_time = time.time()
-            self.abort_reason = reason
-            print(f"[UnifiedEngine] ⚠️ HỦY PHIÊN (ABORT_SESSION) | Lý do: {reason}")
+    def abort_session(self, reason="FINGER_REMOVED", session_id=None):
+        with self._lock:
+            if session_id is not None and session_id != self.session_id:
+                return
+            if self.state in (SessionState.CAPTURING, SessionState.PROCESSING):
+                self.state = SessionState.ABORTED
+                self.state_enter_time = self._clock()
+                self.abort_reason = reason
 
-    def done_session(self, hr: int, spo2: int, ir_avg: int = 0) -> Optional[Dict[str, Any]]:
-        """
-        Nhận sự kiện DONE_SESSION từ ESP32 chứa trung vị HR & SpO2.
-        Nếu AI đã xử lý xong 3 ảnh -> chốt kết quả Late Fusion ngay lập tức.
-        """
-        if self.state not in [SessionState.CAPTURING, SessionState.PROCESSING]:
-            return None
-
-        self.iot_hr = hr
-        self.iot_spo2 = spo2
-        self.iot_ir_avg = ir_avg
-        self.iot_done_received = True
-        print(f"[UnifiedEngine] 🏁 NHẬN DONE_SESSION | HR={hr}, SpO2={spo2}, IR={ir_avg}")
-
-        # Nếu AI đã xử lý xong 3 ảnh -> lập tức hoàn tất phiên
-        if self.ai_processed:
-            record = self._finalize_session()
-            self.state = SessionState.COMPLETED
-            self.state_enter_time = time.time()
-            self.last_completed_record = record
-            return record
-
+    def done_session(self, hr, spo2, ir_avg=0, session_id=None):
+        """Record an event only. The preview loop owns completion transitions."""
+        with self._lock:
+            if session_id is not None and session_id != self.session_id:
+                return None
+            if self.state not in (SessionState.CAPTURING, SessionState.PROCESSING) or self.iot_done_received:
+                return None
+            try:
+                if any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       for value in (hr, spo2, ir_avg)):
+                    return None
+                values = [float(hr), float(spo2), float(ir_avg)]
+                if not all(math.isfinite(x) for x in values):
+                    return None
+                if not (0 <= values[0] <= 300 and 0 <= values[1] <= 100 and values[2] >= 0):
+                    return None
+            except (ValueError, TypeError):
+                return None
+            self.iot_hr, self.iot_spo2, self.iot_ir_avg = values
+            self.iot_done_received = True
         return None
 
-    def update(self, frame_bgr: np.ndarray) -> Dict[str, Any]:
-        """
-        Hàm điều phối luồng Snapshot 3 ảnh rời rạc.
-        Camera không lấy ảnh liên tục để phân tích:
-          - Ảnh 1: T = 0ms
-          - Ảnh 2: T = 300ms
-          - Ảnh 3: T = 600ms
-        Sau khi đủ 3 ảnh, camera DỪNG chụp và nạp vào 2 AI.
-        """
-        now = time.time()
-        elapsed_in_state = now - self.state_enter_time
-        elapsed_in_session = now - self.session_start_time if self.session_start_time > 0 else 0.0
-
-        # Kiểm tra Hard Timeout cho phiên đang quét (6.0s)
-        if self.state in [SessionState.CAPTURING, SessionState.PROCESSING]:
-            if elapsed_in_session >= self.HARD_TIMEOUT_SEC:
-                self.abort_session(reason="HARD_TIMEOUT_EXCEEDED")
-
-        # Tự động chuyển trạng thái hoàn tất / hủy
-        if self.state == SessionState.COMPLETED:
-            if elapsed_in_state >= self.COMPLETED_DISPLAY_SEC:
-                self._reset_to_idle()
-
-        elif self.state == SessionState.ABORTED:
-            if elapsed_in_state >= self.ABORTED_DISPLAY_SEC:
-                self._reset_to_idle()
-
-        # -------------------------------------------------------------
-        # TRẠNG THÁI IDLE: CPU NGHỈ HOÀN TOÀN (0% AI LOAD)
-        # -------------------------------------------------------------
-        if self.state == SessionState.IDLE:
-            return {
-                "state": self.state,
-                "elapsed_in_state": elapsed_in_state,
-                "elapsed_in_session": 0.0,
-                "captured_count": 0,
-                "captured_frames": [],
-                "flash_timer": 0.0,
-                "ai2_result": None,
-                "face_bbox": None,
-                "sharpness": 0.0,
-                "identified_id": None,
-                "identified_name": "Đặt ngón tay lên cảm biến để bắt đầu chấm công",
-                "identity_sim": 0.0,
-                "completed_record": None,
-                "abort_reason": "",
-                "latest_metrics": self.latest_face_metrics,
-            }
-
-        # -------------------------------------------------------------
-        # TRẠNG THÁI CAPTURING: CHỤP 3 ẢNH RỜI RẠC CÁCH NHAU 300MS
-        # -------------------------------------------------------------
-        if self.state == SessionState.CAPTURING:
-            count = len(self.captured_frames)
-
-            # Ảnh 1: Chụp ngay tại thời điểm kích hoạt (T = 0ms)
-            if count == 0:
-                self.captured_frames.append(frame_bgr.copy())
-                self.captured_timestamps.append(elapsed_in_session)
-                self.last_capture_time = now
-                self.flash_timer = now
-                print(f"[UnifiedEngine] 📸 Đã chụp Ảnh 1/3 (T = 0ms)")
-
-            # Ảnh 2: Chụp sau ít nhất 300ms
-            elif count == 1 and (now - self.last_capture_time >= self.SNAPSHOT_INTERVAL):
-                self.captured_frames.append(frame_bgr.copy())
-                self.captured_timestamps.append(elapsed_in_session)
-                self.last_capture_time = now
-                self.flash_timer = now
-                print(f"[UnifiedEngine] 📸 Đã chụp Ảnh 2/3 (T = +300ms)")
-
-            # Ảnh 3: Chụp sau ít nhất 300ms nữa (+600ms)
-            elif count == 2 and (now - self.last_capture_time >= self.SNAPSHOT_INTERVAL):
-                self.captured_frames.append(frame_bgr.copy())
-                self.captured_timestamps.append(elapsed_in_session)
-                self.last_capture_time = now
-                self.flash_timer = now
-                print(f"[UnifiedEngine] 📸 Đã chụp Ảnh 3/3 (T = +600ms)")
-
-                # ĐÃ ĐỦ 3 ẢNH! DỪNG CHỤP VÀ CHUYỂN SANG PHÂN TÍCH 2 AI
-                self.state = SessionState.PROCESSING
-                self.state_enter_time = now
-                print("[UnifiedEngine] 🛑 Đã chụp đủ 3 ảnh rời rạc. Camera NGẮT chụp, nạp vào 2 AI...")
-                self._process_3_snapshots()
-
-                # Nếu IoT đã gửi dữ liệu xong từ trước (hoặc khi IoT gửi đồng thời):
-                if self.iot_done_received:
-                    record = self._finalize_session()
+    def update(self, frame_bgr):
+        with self._lock:
+            now = self._clock()
+            if self._closed:
+                return self._info(now)
+            if self.state in (SessionState.CAPTURING, SessionState.PROCESSING):
+                if now - self.session_start_time >= self.HARD_TIMEOUT_SEC:
+                    self.abort_session("HARD_TIMEOUT_EXCEEDED")
+            if self.state in (SessionState.COMPLETED, SessionState.ABORTED):
+                duration = self.COMPLETED_DISPLAY_SEC if self.state == SessionState.COMPLETED else self.ABORTED_DISPLAY_SEC
+                if now - self.state_enter_time >= duration and (self._future is None or self._future.done()):
+                    self.state = SessionState.IDLE
+                    self.state_enter_time = now
+                    self._future = None
+                    self._clear_session()
+            if self.state == SessionState.CAPTURING:
+                if self.captured_frames and now - self.last_capture_time > MAX_SNAPSHOT_GAP + 1e-9:
+                    self.abort_session('SNAPSHOT_GAP_EXCEEDED')
+                elif frame_bgr is not None and getattr(frame_bgr, "size", 1) > 0:
+                    if not self.captured_frames or now - self.last_capture_time >= self.SNAPSHOT_INTERVAL:
+                        self.captured_frames.append(frame_bgr.copy())
+                        self.captured_timestamps.append(now - self.session_start_time)
+                        self.last_capture_time = now
+                        self.flash_timer = time.time()
+                        if len(self.captured_frames) == self.TOTAL_SNAPSHOTS:
+                            self.state = SessionState.PROCESSING
+                            self.state_enter_time = now
+                            self._future = self._pool.submit(self._analyzer, tuple(self.captured_frames))
+            if self.state == SessionState.PROCESSING:
+                if not self.ai_processed and self._future is not None and self._future.done():
+                    try:
+                        self._accept_analysis(self._future.result())
+                    except Exception:
+                        self.abort_session("AI_PROCESSING_FAILED")
+                if self.state == SessionState.PROCESSING and self.ai_processed:
+                    if self.iot_done_received or now - self.session_start_time >= self.IOT_TIMEOUT_SEC:
+                        self.state = SessionState.FINALIZING
+                        self.state_enter_time = now
+                        self._future = self._pool.submit(self._finalize_session)
+            if self.state == SessionState.FINALIZING and self._future.done():
+                try:
+                    self.last_completed_record = self._future.result()
                     self.state = SessionState.COMPLETED
-                    self.state_enter_time = time.time()
-                    self.last_completed_record = record
+                except Exception:
+                    self.state = SessionState.ABORTED
+                    self.abort_reason = "PERSISTENCE_FAILED"
+                self.state_enter_time = now
+            if self.state == SessionState.IDLE and now >= self._next_retry:
+                if self._retry_future is None or self._retry_future.done():
+                    self._retry_future = self._retry_pool.submit(self._retry_pending)
+                    self._next_retry = now + 30
+            return self._info(now)
 
-        # -------------------------------------------------------------
-        # TRẠNG THÁI PROCESSING: ĐÃ CÓ 3 ẢNH, ĐANG PHÂN TÍCH & ĐỢI IOT
-        # -------------------------------------------------------------
-        elif self.state == SessionState.PROCESSING:
-            # Nếu AI đã xong và IoT đã nhận xong -> Hoàn tất
-            if self.ai_processed and self.iot_done_received:
-                record = self._finalize_session()
-                self.state = SessionState.COMPLETED
-                self.state_enter_time = time.time()
-                self.last_completed_record = record
-            elif elapsed_in_session >= 3.5:
-                # Quá 3.5s mà chưa có done IoT -> tự động hoàn tất với dữ liệu hiện có
-                print("[UnifiedEngine] ⏱️ Tự động chốt phiên (Timeout chờ IoT).")
-                record = self._finalize_session()
-                self.state = SessionState.COMPLETED
-                self.state_enter_time = time.time()
-                self.last_completed_record = record
+    def _retry_pending(self):
+        results = self.transport.retry_pending()
+        for event_id, result in results:
+            if result.get("status") in ("success", "completed"):
+                self._append_log({"event_id": event_id, "type": "sync_result", "web_result": result})
+        return results
 
-        return {
-            "state": self.state,
-            "elapsed_in_state": elapsed_in_state,
-            "elapsed_in_session": elapsed_in_session,
-            "captured_count": len(self.captured_frames),
-            "captured_frames": self.captured_frames,
-            "flash_timer": self.flash_timer,
-            "ai2_result": {"status": self.session_status_history[0]} if self.session_status_history else None,
-            "face_bbox": self.face_bbox,
-            "sharpness": self.best_frame_score if self.best_frame_score > 0 else 0.0,
-            "identified_id": self.identified_id,
-            "identified_name": self.identified_name,
-            "identity_sim": self.identity_sim,
-            "completed_record": self.last_completed_record if self.state == SessionState.COMPLETED else None,
-            "abort_reason": self.abort_reason,
-            "latest_metrics": self.latest_face_metrics,
-        }
-
-    def _process_3_snapshots(self) -> None:
-        """
-        Phân tích 2 mô hình AI trên đúng 3 tấm ảnh vừa chụp (không lấy thêm bất kỳ frame nào):
-          1. AI 1 (InsightFace): Lọc ảnh nét nhất trong 3 ảnh bằng Laplacian để nhận diện danh tính.
-          2. AI 2 (MediaPipe + Random Forest): Nạp trọn vẹn cả 3 ảnh để trích xuất 7 đặc trưng cử động.
-        """
-        if len(self.captured_frames) != 3:
-            return
-
-        frames = self.captured_frames
-
-        # ---------------------------------------------------------
-        # 1. AI 1: TÍNH ĐỘ NÉT LAPLACIAN VÀ CHỌN ẢNH NÉT NHẤT
-        # ---------------------------------------------------------
-        sharpness_scores = []
-        for f in frames:
-            gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-            s = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-            sharpness_scores.append(s)
-
-        self.captured_sharpness = sharpness_scores
-        best_idx = int(np.argmax(sharpness_scores))
-        self.best_frame_bgr = frames[best_idx].copy()
-        self.best_frame_score = sharpness_scores[best_idx]
-
-        # Lưu 3 ảnh bằng chứng tương ứng: [Ảnh 1 (0ms), Ảnh nét nhất, Ảnh 3 (600ms)]
-        self.evidence_frames[0] = frames[0].copy()
-        self.evidence_frames[1] = frames[best_idx].copy()
-        self.evidence_frames[2] = frames[2].copy()
-
-        # Nạp ảnh nét nhất vào FaceEngine (InsightFace ArcFace)
+    def _append_log(self, record):
         try:
-            res_ai1 = identify(self.face_engine, self.best_frame_bgr, threshold=self.face_threshold)
-            if res_ai1 and res_ai1.get("match"):
-                self.identified_id = res_ai1.get("student_id")
-                self.identified_name = res_ai1.get("name", "Unknown")
-                self.identity_sim = res_ai1.get("similarity", 0.0)
-                self.identity_matched = True
-            elif res_ai1:
-                self.identity_sim = res_ai1.get("similarity", 0.0)
-                self.identified_name = "Không xác định"
-            print(f"[AI 1] Nhận diện trên Ảnh #{best_idx+1} (Nét nhất: {self.best_frame_score:.1f}) | {self.identified_name} (ID: {self.identified_id}) | Sim={self.identity_sim:.3f}")
-        except Exception as e:
-            print(f"[AI 1] Lỗi nhận diện khuôn mặt: {e}")
+            with self._log_lock:
+                with open(self.jsonl_log_path, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+            return True
+        except OSError:
+            # A server ACK remains true even if this secondary journal is full.
+            # The outbox receipt preserves the ACK independently of this log.
+            logging.getLogger(__name__).exception("Cannot append attendance journal")
+            return False
 
-        # ---------------------------------------------------------
-        # 2. AI 2: PHÂN TÍCH THỂ TRẠNG QUA CHUỖI 3 ẢNH RỜI RẠC
-        # ---------------------------------------------------------
+    def _info(self, now):
+        return {"state": self.state, "elapsed_in_state": now - self.state_enter_time,
+                "elapsed_in_session": now - self.session_start_time if self.state != SessionState.IDLE else 0.0,
+                "session_id": self.session_id, "captured_count": len(self.captured_frames),
+                "captured_frames": list(self.captured_frames), "flash_timer": self.flash_timer,
+                "ai2_result": {"status": self.session_status_history[0], "is_valid": self.ai2_valid} if self.session_status_history else None,
+                "face_bbox": self.face_bbox, "sharpness": max(0.0, self.best_frame_score),
+                "identified_id": self.identified_id, "identified_name": self.identified_name,
+                "identity_sim": self.identity_sim,
+                "completed_record": self.last_completed_record if self.state == SessionState.COMPLETED else None,
+                "abort_reason": self.abort_reason, "latest_metrics": dict(self.latest_face_metrics)}
+
+    def _analyze_snapshots(self, frames):
+        import cv2
+        import numpy as np
+        from src.verify import identify
+        scores = [float(cv2.Laplacian(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()) for f in frames]
+        best = int(np.argmax(scores))
         try:
-            ai2_detail = self.status_predictor.predict_status_detailed(frames)
-            raw_status = ai2_detail.get("status", "Normal")
-            if raw_status in ["Normal", "Fatigue", "Exhausted"]:
-                self.session_status_history = [raw_status]
-            else:
-                self.session_status_history = ["Normal"]
+            embeddings = [self.face_engine.embed(frame) for frame in frames]
+            consistent = all(embedding is not None for embedding in embeddings)
+            if consistent:
+                consistent = all(float(np.dot(embeddings[best], embedding)) >= self.face_threshold
+                                 for embedding in embeddings)
+            identity = (identify(self.face_engine, frames[best], threshold=self.face_threshold,
+                                 probe_embedding=embeddings[best]) if consistent else {"match": False})
+        except Exception:
+            identity = {"match": False}
+        try:
+            status = self.status_predictor.predict_status_detailed(frames)
+        except Exception:
+            status = {"status": "Unknown", "is_valid": False, "message": "AI 2 không phân tích được"}
+        return {"scores": scores, "best": best, "identity": identity, "status": status}
 
-            metrics = ai2_detail.get("metrics", {})
-            self.latest_face_metrics = {
-                "ear": float(metrics.get("ear", 0.0)),
-                "mar": float(metrics.get("mar", 0.0)),
-                "pitch": float(metrics.get("pitch", 0.0)),
-                "yaw": float(metrics.get("yaw", 0.0)),
-                "sharpness": self.best_frame_score,
-            }
-            print(f"[AI 2] Phân tích 3 ảnh rời rạc -> Thể trạng: {raw_status} | EAR={metrics.get('ear')} | MAR={metrics.get('mar')} | Pitch={metrics.get('pitch')}")
-        except Exception as e:
-            print(f"[AI 2] Lỗi phân tích thể trạng: {e}")
-            self.session_status_history = ["Normal"]
-
+    def _accept_analysis(self, result):
+        best = result["best"]
+        self.captured_sharpness = result["scores"]
+        self.best_frame_score = result["scores"][best]
+        if not all(math.isfinite(score) and score >= 0 for score in self.captured_sharpness):
+            raise ValueError("Invalid frame quality score")
+        self.best_frame_bgr = self.captured_frames[best]
+        self.evidence_frames = [self.captured_frames[0], self.best_frame_bgr, self.captured_frames[2]]
+        identity = result["identity"]
+        self.identity_sim = float(identity.get("similarity", 0.0))
+        if not math.isfinite(self.identity_sim):
+            self.identity_sim = 0.0
+        self.identity_matched = bool(identity.get("match")) and self.face_threshold <= self.identity_sim <= 1.000001
+        self.identified_id = identity.get("student_id") if self.identity_matched else None
+        self.identified_name = identity.get("name", "Chưa xác định") if self.identity_matched else "Chưa xác định"
+        status = result["status"]
+        label = status.get("status", "Unknown")
+        self.ai2_valid = bool(status.get("is_valid")) and label in ("Normal", "Fatigue", "Exhausted")
+        self.ai2_confidence = float(status.get("confidence", 0.0)) if self.ai2_valid else 0.0
+        if not math.isfinite(self.ai2_confidence) or not 0 <= self.ai2_confidence <= 1:
+            self.ai2_valid = False
+            self.ai2_confidence = 0.0
+        self.ai2_message = status.get("message", "")
+        self.session_status_history = [label if self.ai2_valid else "Unknown"]
+        for key in ("ear", "mar", "pitch", "yaw"):
+            value = float(status.get("metrics", {}).get(key, 0.0))
+            self.latest_face_metrics[key] = value if math.isfinite(value) else 0.0
+        self.latest_face_metrics["sharpness"] = self.best_frame_score
         self.ai_processed = True
 
-    def _reset_to_idle(self) -> None:
-        self.state = SessionState.IDLE
-        self.state_enter_time = time.time()
-        self.session_start_time = 0.0
-        self.captured_frames.clear()
-        self.captured_timestamps.clear()
-        self.captured_sharpness.clear()
-        self.last_capture_time = 0.0
-        self.flash_timer = 0.0
-        self.iot_done_received = False
-        self.ai_processed = False
-        self.session_status_history.clear()
-        self.best_frame_score = -1.0
-        self.best_frame_bgr = None
-        self.evidence_frames = [None, None, None]
-        self.face_bbox = None
-        self.abort_reason = ""
-        self.status_predictor.reset()
-        print("[UnifiedEngine] 💤 Trở về IDLE. Sẵn sàng cho phiên tiếp theo.")
-
-    # -------------------------------------------------------------
-    # MA TRẬN HỢP NHẤT QUYẾT ĐỊNH (LATE FUSION)
-    # -------------------------------------------------------------
     def _finalize_session(self) -> Dict[str, Any]:
         """
         Tổng hợp kết quả cuối cùng từ AI 1, AI 2 và dữ liệu IoT.
         Lưu snapshot ảnh và ghi log JSONL.
         """
+        import cv2
+
         # 1. Chốt nhãn khuôn mặt AI 2 bằng Majority Voting & Quy tắc 30% Exhausted
         if self.session_status_history:
             total_valid = len(self.session_status_history)
@@ -467,6 +337,11 @@ class UnifiedAttendanceEngine:
             alert_level = "RED"
             recommendation = "Chỉ số tim mạch hoặc SpO2 bất thường. Cần nghỉ ngơi kiểm tra y tế ngay!"
 
+        elif not self.ai2_valid or bio_level == "Bio_Missing":
+            final_status = "Chưa đủ dữ liệu đánh giá"
+            alert_level = "YELLOW"
+            recommendation = self.ai2_message or "Cần đo lại dữ liệu khuôn mặt và sinh trắc."
+
         elif ai2_final_status == "Exhausted":
             final_status = "Kiệt sức / Buồn ngủ nặng"
             alert_level = "RED"
@@ -487,7 +362,7 @@ class UnifiedAttendanceEngine:
             alert_level = "YELLOW"
             recommendation = "Khuôn mặt tỉnh táo, nhịp tim hơi cao (có thể do vừa vận động hoặc căng thẳng)."
 
-        elif ai2_final_status == "Normal" and bio_level in ["Bio_Normal", "Bio_Missing"]:
+        elif ai2_final_status == "Normal" and bio_level == "Bio_Normal":
             final_status = "Đạt chuẩn sức khỏe"
             alert_level = "GREEN"
             recommendation = "Trạng thái tinh thần và chỉ số sinh tồn hoàn toàn ổn định."
@@ -498,8 +373,8 @@ class UnifiedAttendanceEngine:
             recommendation = "Camera chưa bắt đủ góc mặt chuẩn, ghi nhận theo chỉ số sinh trắc học."
 
         # 5. Lưu 3 ảnh bằng chứng chấm công
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-        ts_filename = time.strftime("%Y%m%d_%H%M%S")
+        now_str = self.occurred_at
+        ts_filename = self.session_id
 
         # Tên 3 ảnh: _start (đầu scanning), _best (chất lượng cao nhất), _end (cuối phiên)
         evidence_labels = ["start", "best", "end"]
@@ -524,19 +399,26 @@ class UnifiedAttendanceEngine:
             rel_path = f"logs/snapshots/{filename}"
             if ev_frame is not None:
                 abs_path = self.snapshots_dir / filename
-                cv2.imwrite(str(abs_path), ev_frame)
-                evidence_paths.append(rel_path)
+                if cv2.imwrite(str(abs_path), ev_frame):
+                    evidence_paths.append(rel_path)
+                else:
+                    evidence_paths.append("")
             else:
                 evidence_paths.append("")  # Frame không có thì để rỗng
 
         # Tương thích ngược: snapshot_path = ảnh best (index 1)
         snapshot_path_compat = evidence_paths[1] if len(evidence_paths) > 1 else ""
 
-        print(f"[UnifiedEngine] 📸 Đã lưu {sum(1 for p in evidence_paths if p)} ảnh bằng chứng")
+        logging.getLogger(__name__).info("Saved %d evidence images", sum(bool(p) for p in evidence_paths))
 
         # 6. Tạo gói JSON Output chuẩn
         record: Dict[str, Any] = {
             "timestamp": now_str,
+            "event_id": self.session_id,
+            "ai2_valid": self.ai2_valid,
+            "ai2_confidence": self.ai2_confidence,
+            "ai2_message": self.ai2_message,
+            "captured_timestamps": self.captured_timestamps,
             "student_id": final_student_id,
             "student_name": final_student_name,
             "face_confidence": round(float(self.identity_sim), 4),
@@ -565,14 +447,6 @@ class UnifiedAttendanceEngine:
             "snapshot_path": snapshot_path_compat,
         }
 
-        # 7. Ghi append vào file JSONL
-        try:
-            with open(self.jsonl_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            print(f"[UnifiedEngine] 💾 Đã lưu kết quả vào {self.jsonl_log_path}")
-        except Exception as e:
-            print(f"[UnifiedEngine] Lỗi lưu log JSONL: {e}")
-
         # 8. Đồng bộ kết quả chấm công sang Web Backend qua API
         best_img = self.evidence_frames[1] if self.evidence_frames[1] is not None else self.best_frame_bgr
         web_res = self._sync_attendance_to_web(final_student_id, hr, spo2, ai2_final_status, best_img)
@@ -588,69 +462,39 @@ class UnifiedAttendanceEngine:
             record["attendance_action"] = "DA_CHECK_OUT"
             record["attendance_msg"] = "Hôm nay bạn đã hoàn thành ca làm việc"
         else:
-            record["attendance_action"] = "CHAM_CONG"
-            record["attendance_msg"] = msg or "Đã ghi nhận"
+            record["attendance_action"] = "PENDING" if web_res.get("status") == "pending" else "NOT_RECORDED"
+            record["attendance_msg"] = msg or "Chưa được Web xác nhận"
         record["web_result"] = web_res
 
+        record["local_log_saved"] = True
+        if not self._append_log(record):
+            record["local_log_saved"] = False
         return record
 
-    def _sync_attendance_to_web(
-        self,
-        student_id: str,
-        hr: int,
-        spo2: int,
-        ai2_status: str,
-        best_frame: Optional[np.ndarray],
-    ) -> Dict[str, Any]:
-        """Gửi kết quả điểm danh lên Web backend qua REST API."""
-        if not student_id or student_id == "Unknown":
+    def _sync_attendance_to_web(self, student_id, hr, spo2, ai2_status, best_frame):
+        if not self.identity_matched or not student_id or student_id == "Unknown":
             return {"action": "none", "status": "no_identity", "message": "Chưa xác định danh tính"}
-
-        # Trích xuất số ID (ví dụ SV001 -> 1, NV02 -> 2, 1 -> 1)
-        num_str = "".join(filter(str.isdigit, student_id))
-        if not num_str:
-            return {"action": "none", "status": "no_id", "message": "Không tìm thấy mã số"}
-        emp_id = int(num_str)
-
-        img_b64 = None
+        match = re.fullmatch(r"(?:SV|NV)?([0-9]+)", str(student_id), flags=re.IGNORECASE)
+        if not match or int(match.group(1)) <= 0:
+            return {"action": "none", "status": "no_id", "message": "Mã nhân viên không hợp lệ"}
+        image = None
         if best_frame is not None:
-            try:
-                ret, buf = cv2.imencode(".jpg", best_frame)
-                if ret:
-                    import base64
-                    img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
-            except Exception:
-                pass
+            import cv2
+            success, buffer = cv2.imencode(".jpg", best_frame)
+            if success:
+                image = base64.b64encode(buffer.tobytes()).decode("ascii")
+        payload = {"event_id": self.session_id, "occurred_at": self.occurred_at,
+                   "MaNV": int(match.group(1)), "MaTB": int(os.environ.get("PBL4_DEVICE_ID", "1")),
+                   "NhipTim": hr if hr > 0 else None, "SpO2": spo2 if spo2 > 0 else None,
+                   "TrangThai": ai2_status, "image": image}
+        return self.transport.send(payload)
 
-        payload: Dict[str, Any] = {
-            "MaNV": emp_id,
-            "MaTB": 1,
-            "NhipTim": hr if hr > 0 else None,
-            "SpO2": float(spo2) if spo2 > 0 else None,
-            "TrangThai": ai2_status,
-            "image": img_b64,
-        }
-
-        try:
-            import requests
-            res = requests.post(self.web_api_url, json=payload, timeout=2.5)
-            if res.status_code == 200:
-                data = res.json()
-                msg = data.get("message", "Thành công")
-                st = data.get("status", "")
-                if st == "completed":
-                    print(f"[SyncWeb] ⛔ TỪ CHỐI: {msg} (MaNV={emp_id})")
-                else:
-                    print(f"[SyncWeb] ✅ Đã đồng bộ sang Web: {msg} (MaNV={emp_id})")
-                return data
-            else:
-                print(f"[SyncWeb] ⚠️ Web trả về mã {res.status_code}: {res.text[:80]}")
-                return {"action": "error", "status": "error", "message": f"HTTP {res.status_code}"}
-        except Exception as e:
-            # Không làm gián đoạn hệ thống nếu Web/Docker chưa mở
-            print(f"[SyncWeb] ℹ️ Chưa kết nối Web API ({self.web_api_url}): {e}")
-            return {"action": "offline", "status": "offline", "message": "Ngoại tuyến"}
-
-    def close(self) -> None:
-        """Đóng an toàn engine."""
-        pass
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        # Do not cancel an already submitted finalization when the user quits.
+        self._pool.shutdown(wait=True, cancel_futures=False)
+        self._retry_pool.shutdown(wait=True, cancel_futures=False)
+        self.status_predictor.close()

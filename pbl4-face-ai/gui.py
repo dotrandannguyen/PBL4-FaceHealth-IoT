@@ -1,7 +1,10 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import subprocess
 import os
+from src.runtime_config import load_environment
+
+load_environment()
 import pickle
 import threading
 from pathlib import Path
@@ -17,7 +20,7 @@ DB_PATH = BASE_DIR / "data" / "embeddings.pkl"
 
 def run_cmd(cmd_list, title=""):
     try:
-        subprocess.Popen(cmd_list, env=ENV)
+        subprocess.Popen(cmd_list, env=ENV, cwd=BASE_DIR)
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể chạy lệnh {title}:\n{str(e)}")
 
@@ -38,6 +41,16 @@ class FaceAIDashboard(tk.Tk):
         self.geometry("780x640")
         self.resizable(False, False)
         self.ai_service_proc = None
+        from src.ui_worker import UiWorker
+        from src.desktop_enrollment import DesktopEnrollment
+        self.io = UiWorker(self)
+        from src.process_runner import ProcessRunner
+        self.training_io = UiWorker(self)
+        self.training_runner = ProcessRunner()
+        self.train_busy = False
+        self.store = DesktopEnrollment()
+        self._checking_service = False
+        self._service_timer = None
         
         # Cài đặt Theme cho đẹp hơn
         style = ttk.Style(self)
@@ -57,7 +70,7 @@ class FaceAIDashboard(tk.Tk):
         self.setup_left_panel()
         self.setup_right_panel()
         self.refresh_user_list()
-        self.after(500, self._check_ai_service_status)
+        self._service_timer = self.after(500, self._check_ai_service_status)
 
     def setup_left_panel(self):
         # --- Phần Đăng ký ---
@@ -142,8 +155,15 @@ class FaceAIDashboard(tk.Tk):
 
         btn_clear = ttk.Button(frame_utils, text="🗑 Xóa toàn bộ DB", command=self.handle_clear_db)
         btn_clear.pack(side="right", padx=5, expand=True, fill="x")
+        ttk.Button(self.right_frame, text='Thử đồng bộ batch chờ', command=self.handle_retry_sync).pack(fill='x', padx=5)
 
     def refresh_user_list(self):
+        def done(result):
+            self._render_user_list()
+        self.io.submit(self.store.refresh, done,
+                       lambda error: messagebox.showerror('Đồng bộ', 'Chưa tải được gallery từ DB; dữ liệu cũ được giữ nguyên.'))
+
+    def _render_user_list(self):
         # Xóa dữ liệu cũ trên bảng
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -159,119 +179,121 @@ class FaceAIDashboard(tk.Tk):
         run_cmd([PYTHON_CMD, "demo_unified_iot.py"], "Chấm công Thông minh")
 
     def handle_train_status(self):
-        msg = (
-            "Hướng dẫn thu thập dữ liệu 3 cấp độ mệt mỏi (AI 2):\n"
-            "- Cửa sổ Webcam sẽ hiện ra kèm chỉ số EAR trực tiếp.\n"
-            "- Bấm các phím số tương ứng để ghi lại chuỗi 3 frames:\n"
-            "  [1] Normal    : Bình thường / Tỉnh táo (EAR >= 0.25)\n"
-            "  [2] Fatigue   : Mệt mỏi / Lờ đờ (0.18 <= EAR < 0.25)\n"
-            "  [3] Exhausted : Kiệt sức / Sụp mí (EAR < 0.18)\n"
-            "- Bấm [Q] để Lưu dữ liệu vào CSV và Thoát Webcam.\n\n"
-            "Hệ thống sẽ TỰ ĐỘNG TRAIN Random Forest ngay sau khi bạn bấm Q thoát.\n"
-            "Bạn có muốn bắt đầu ngay bây giờ?"
-        )
-        if messagebox.askyesno("Thu thập & Train AI", msg):
-            cmd = [PYTHON_CMD, "scripts/collect_status.py"]
-            
-            def worker():
-                subprocess.run(cmd, env=ENV)
-                # Chạy tiếp lệnh Train
-                subprocess.run([PYTHON_CMD, "src/train_rf.py"], env=ENV)
-                messagebox.showinfo("Thành công", "Đã Train xong AI Trạng thái khuôn mặt!")
-                
-            threading.Thread(target=worker, daemon=True).start()
+        if self.train_busy:
+            return
+        subject = simpledialog.askstring('Người tham gia', 'Nhập mã người ổn định (mã giả danh, không dùng anonymous):', parent=self)
+        if subject is None:
+            return
+        from src.status_dataset import subject_id
+        try:
+            subject = subject_id(subject.strip())
+        except ValueError as error:
+            messagebox.showerror('Mã người', str(error))
+            return
+        if not messagebox.askyesno('Thu thập và train',
+            'Phím 1/2/3 chọn nhãn thủ công Normal/Fatigue/Exhausted; mỗi lần ghi ba ảnh cách nhau 300 ms. '
+            'Q dừng thu thập. Chỉ train khi có mẫu mới và dữ liệu đủ người độc lập, đủ ba nhãn. '
+            'EAR không tự quyết định nhãn. Bắt đầu?'):
+            return
+        self.train_busy = True
+        def work():
+            collected = self.training_runner.run([PYTHON_CMD, 'scripts/collect_status.py', '--subject', subject], env=ENV, cwd=BASE_DIR)
+            if collected.returncode != 0:
+                return 'Thu thập đã dừng hoặc chưa có mẫu mới; model hiện có được giữ nguyên.'
+            trained = self.training_runner.run([PYTHON_CMD, 'src/train_rf.py'], env=ENV, cwd=BASE_DIR)
+            if trained.returncode != 0:
+                return 'Mẫu thu thập đã lưu; chưa train được. Cần dataset v2 đủ người/nhãn và môi trường phù hợp. Model cũ được giữ nguyên.'
+            return 'Đã train và lưu model cùng metadata; kết quả đánh giá thuộc split của dataset này.'
+        def done(message):
+            self.train_busy = False
+            messagebox.showinfo('Thu thập/train', message)
+        def failed(error):
+            self.train_busy = False
+            messagebox.showerror('Thu thập/train', 'Không chạy được tiến trình. Kiểm tra Python/dependency; dữ liệu đã lưu được giữ nguyên.')
+        self.training_io.submit(work, done, failed)
 
     def handle_test_status(self):
         run_cmd([PYTHON_CMD, "src/predict_status.py"], "Test Trạng thái")
 
     def handle_clear_db(self):
-        if messagebox.askyesno("Cảnh báo", "Bạn có chắc chắn muốn xóa TOÀN BỘ dữ liệu sinh viên đã đăng ký không?"):
-            if DB_PATH.exists():
-                DB_PATH.unlink()
-            import shutil
-            reg_dir = Path("data/registered")
-            if reg_dir.exists():
-                shutil.rmtree(reg_dir, ignore_errors=True)
-            try:
-                import pymysql
-                conn = pymysql.connect(
-                    host="127.0.0.1", port=3306, user="pbl4_user", password="pbl4_password",
-                    database="DoAn_ChamCong_AI_MariaDB", charset="utf8mb4", autocommit=True, connect_timeout=2
-                )
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM FaceEmbedding;")
-                cursor.close(); conn.close()
-            except Exception:
-                pass
-            self.refresh_user_list()
-            messagebox.showinfo("Thành công", "Đã xóa sạch cơ sở dữ liệu khuôn mặt!")
+        try:
+            identities = {user['id']: self.store.revision(user['id']) for user in get_registered_users()}
+        except Exception:
+            messagebox.showerror('Đồng bộ', 'Làm mới gallery từ DB trước khi xóa.')
+            return
+        if not identities or not messagebox.askyesno('Xác nhận', f'Xóa mẫu của {len(identities)} nhân viên trong danh sách? Giữ hồ sơ và lịch sử.'):
+            return
+        def work():
+            for sid, revision in identities.items():
+                self.store.stage_delete(sid, revision)
+            return self.store.retry()
+        def done(result):
+            self._render_user_list()
+            messagebox.showinfo('Đồng bộ', f"Đã hoàn tất {result['completed']}; còn {result['pending']} batch chờ. " + '; '.join(result['errors']))
+        self.io.submit(work, done, lambda error: messagebox.showerror('Đồng bộ', 'Chưa xóa xong; batch chờ và gallery được giữ để kiểm tra/thử lại.'))
+
+    def handle_retry_sync(self):
+        def done(result):
+            self._render_user_list()
+            messagebox.showinfo('Đồng bộ', f"Đã hoàn tất {result['completed']}; còn {result['pending']} batch chờ. " + '; '.join(result['errors']))
+        self.io.submit(self.store.retry, done, lambda error: messagebox.showerror('Đồng bộ', 'Không đọc được batch chờ; giữ nguyên để kiểm tra.'))
 
     def handle_toggle_ai_service(self):
-        import urllib.request
-        is_running = False
-        try:
-            with urllib.request.urlopen("http://127.0.0.1:5001/health", timeout=0.5) as r:
-                if r.status == 200:
-                    is_running = True
-        except Exception:
-            is_running = False
-
-        if is_running:
-            if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
-                self.ai_service_proc.terminate()
-                self.ai_service_proc = None
-                messagebox.showinfo("AI Service", "Đã dừng AI REST Service.")
-            else:
-                messagebox.showinfo("AI Service", "AI Service đang chạy ở process khác hoặc cổng 5001 đang được sử dụng.")
-        else:
+        if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
+            self.ai_service_proc.terminate()
+            return
+        def checked(health):
+            if health is not None:
+                messagebox.showinfo('AI Service', 'Service đang chạy ở process khác; chỉ process do cửa sổ này tạo mới được dừng.')
+                return
             try:
-                self.ai_service_proc = subprocess.Popen([PYTHON_CMD, "ai_web_service.py"], env=ENV)
-                messagebox.showinfo("AI Service", "Đã khởi động AI REST Service trên cổng 5001!")
-            except Exception as e:
-                messagebox.showerror("Lỗi", f"Không thể bật AI Service:\n{str(e)}")
+                self.ai_service_proc = subprocess.Popen([PYTHON_CMD, 'ai_web_service.py'], env=ENV, cwd=BASE_DIR)
+                messagebox.showinfo('AI Service', 'Đã bắt đầu tải service. Theo dõi trạng thái model trước khi đăng ký.')
+            except Exception:
+                messagebox.showerror('AI Service', 'Không khởi động được service; kiểm tra Python/môi trường.')
+        self.io.submit(self._read_service_health, checked, lambda error: checked(None))
 
-        self._check_ai_service_status()
+    @staticmethod
+    def _read_service_health():
+        import requests
+        try:
+            url = os.environ.get('PBL4_AI_URL', os.environ.get('AI_SERVICE_URL', 'http://127.0.0.1:5001')).rstrip('/')
+            response = requests.get(url + '/health', timeout=.6, allow_redirects=False)
+            health = response.json()
+            return health if response.status_code == 200 and isinstance(health, dict) and health.get('service') == 'PBL4 Face AI Service' else None
+        except Exception:
+            return None
 
     def handle_open_web(self):
         import webbrowser
         webbrowser.open("http://localhost:8080")
 
     def _check_ai_service_status(self):
-        def _check():
-            import urllib.request
-            running = False
-            try:
-                with urllib.request.urlopen("http://127.0.0.1:5001/health", timeout=0.6) as r:
-                    if r.status == 200:
-                        running = True
-            except Exception:
-                running = False
-
-            def _update_ui():
-                if running:
-                    self.lbl_service_status.config(
-                        text="🟢 AI Service: Đang chạy (Port 5001)",
-                        foreground="#27ae60",
-                    )
-                    self.btn_service.config(text="🛑 Dừng AI REST Service")
-                else:
-                    self.lbl_service_status.config(
-                        text="⚪ AI Service: Đã dừng",
-                        foreground="#7f8c8d",
-                    )
-                    self.btn_service.config(text="🚀 Bật AI REST Service (Port 5001)")
-                self.after(3000, self._check_ai_service_status)
-
-            self.after(0, _update_ui)
-
-        threading.Thread(target=_check, daemon=True).start()
+        if self._checking_service:
+            return
+        self._checking_service = True
+        def update(health):
+            self._checking_service = False
+            ready = health is not None and health.get('model_ready') is True
+            text = 'AI Service: sẵn sàng' if ready else ('AI Service: model chưa sẵn sàng' if health else 'AI Service: chưa kết nối')
+            self.lbl_service_status.config(text=text, foreground='#27ae60' if ready else '#7f8c8d')
+            self.btn_service.config(text='Dừng service của cửa sổ này' if self.ai_service_proc is not None and self.ai_service_proc.poll() is None else 'Bật AI REST Service')
+            self._service_timer = self.after(3000, self._check_ai_service_status)
+        self.io.submit(self._read_service_health, update, lambda error: update(None))
 
     def destroy(self):
+        if self._service_timer:
+            self.after_cancel(self._service_timer)
+        self.io.close()
+        self.training_runner.close()
+        self.training_io.close()
         if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
+            self.ai_service_proc.terminate()
             try:
-                self.ai_service_proc.terminate()
-            except Exception:
-                pass
+                self.ai_service_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.ai_service_proc.kill()
+                self.ai_service_proc.wait(timeout=2)
         super().destroy()
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ CREATE TABLE `TaiKhoan` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `LichSuSucKhoe` (
+    `TheTrang` VARCHAR(100) NULL,
     `MaSK` INT NOT NULL AUTO_INCREMENT,
     `MaNV` INT NULL,
     `NhipTim` INT NULL,
@@ -102,6 +103,9 @@ CREATE TABLE `PhanCaNhanVien` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `ChamCong` (
+    `TheTrang` VARCHAR(100) NULL,
+    `TheTrangVao` VARCHAR(100) NULL,
+    `TheTrangRa` VARCHAR(100) NULL,
     `MaCC` INT NOT NULL AUTO_INCREMENT,
     `MaNV` INT NULL,
     `GioVao` DATETIME(3) NULL,
@@ -150,3 +154,15 @@ CREATE TABLE `CanhBao` (
     CONSTRAINT `FK__CanhBao__MaTT__52593CB8`
         FOREIGN KEY (`MaTT`) REFERENCES `LichSuTrangThai` (`MaTT`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS AttendanceEvent (
+    EventId CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    RequestHash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    MaNV INT NOT NULL,
+    MaTB INT NOT NULL,
+    OccurredAt DATETIME(3) NOT NULL,
+    ResultJson LONGTEXT NULL,
+    CreatedAt DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (EventId),
+    KEY IX_AttendanceEvent_MaNV_OccurredAt (MaNV, OccurredAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

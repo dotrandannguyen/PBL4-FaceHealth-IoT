@@ -1,49 +1,84 @@
-
-from flask import Flask, request, jsonify
+"""Authenticated, bounded JPEG receiver. Images do not create attendance events."""
+from datetime import datetime, timezone
+import hashlib
+import hmac
+import io
+import os
 from pathlib import Path
-from datetime import datetime
+import sys
+from uuid import uuid4
+from flask import Flask,request,jsonify
+from PIL import Image
+from werkzeug.exceptions import RequestEntityTooLarge
 
-app = Flask(__name__)
+AI_ROOT=Path(__file__).resolve().parents[2]/'pbl4-face-ai'
+sys.path.insert(0,str(AI_ROOT))
+from src.runtime_config import load_environment
+from src.atomic_storage import atomic_write
+from src.gallery_store import gallery_lock
 
-# Thu muc luu anh
-UPLOAD_FOLDER = Path("received_images")
-UPLOAD_FOLDER.mkdir(exist_ok=True)
 
-@app.route("/", methods=["GET"])
-def home():
-    return "ESP32-CAM image server is running!"
+def create_app(config=None):
+    app=Flask(__name__)
+    load_environment()
+    app.config.update(MAX_CONTENT_LENGTH=5*1024*1024,
+        UPLOAD_FOLDER=Path(__file__).resolve().parent/'received_images',
+        UPLOAD_TOKEN=os.environ.get('PBL4_UPLOAD_TOKEN',''),
+        MAX_STORED_BYTES=256*1024*1024,MAX_STORED_IMAGES=1000)
+    if config:
+        app.config.update(config)
 
-# Tao dia chi de esp32-cam gui den
-@app.route("/upload", methods=["POST"])
-def upload_image():
-    # Get du lieu anh JPEG tu ESP32-CAM
-    image_data = request.get_data()
+    @app.after_request
+    def no_store(response):
+        response.headers['Cache-Control']='private, no-store'
+        return response
 
-    if not image_data:
-        return jsonify({
-            "success": False,
-            "message": "Khong nhan duoc du lieu anh"
-        }), 400
+    @app.errorhandler(RequestEntityTooLarge)
+    def oversized(error):
+        return jsonify(success=False,message='JPEG exceeds upload limit'),413
 
-    # Tao ten file theo thoi gian
-    filename = datetime.now().strftime(
-        "photo_%Y%m%d_%H%M%S_%f.jpg"
-    )
+    @app.route('/',methods=['GET'])
+    def health():
+        return jsonify(success=True,service='PBL4 JPEG receiver')
 
-    file_path = UPLOAD_FOLDER / filename
-    file_path.write_bytes(image_data) # luu data thanh file anh tren may tinh
+    @app.route('/upload',methods=['POST'])
+    def upload():
+        token=app.config['UPLOAD_TOKEN']
+        if not token:
+            return jsonify(success=False,message='Upload API is not configured'),503
+        supplied=request.headers.get('Authorization','').encode('utf-8')
+        if not hmac.compare_digest(supplied,('Bearer '+token).encode('utf-8')):
+            return jsonify(success=False,message='Unauthorized'),401
+        if request.mimetype!='image/jpeg':
+            return jsonify(success=False,message='Content-Type image/jpeg required'),415
+        raw=request.get_data()
+        if not raw:
+            return jsonify(success=False,message='Empty JPEG'),400
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                if image.format!='JPEG' or image.width*image.height>16000000:
+                    raise ValueError('Invalid JPEG dimensions')
+                image.load()
+        except Exception:
+            return jsonify(success=False,message='Invalid JPEG'),400
+        try:
+            folder=Path(app.config['UPLOAD_FOLDER']).resolve()
+            with gallery_lock(folder/'upload-quota'):
+                files=list(folder.glob('*.jpg'))
+                if len(files)>=app.config['MAX_STORED_IMAGES'] or sum(path.stat().st_size for path in files)+len(raw)>app.config['MAX_STORED_BYTES']:
+                    return jsonify(success=False,message='Image storage quota reached'),507
+                filename=uuid4().hex+'.jpg'
+                atomic_write(folder/filename,raw)
+            return jsonify(success=True,filename=filename,size=len(raw),sha256=hashlib.sha256(raw).hexdigest(),
+                           received_at=datetime.now(timezone.utc).isoformat())
+        except Exception:
+            app.logger.exception('JPEG storage failed')
+            return jsonify(success=False,message='Image storage unavailable'),503
+    return app
 
-    print(f"Da nhan anh: {file_path}")
-    print(f"Kich thuoc: {len(image_data)} bytes")
 
-    return jsonify({
-        "success": True,
-        "message": "Da nhan anh",
-        "filename": filename,
-        "size": len(image_data)
-    }), 200
+app=create_app()
 
-# host="0.0.0.0": cho phép thiết bị khác trong mạng truy cập server, thay vì chỉ máy tính tự truy cập.
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False) 
-
+if __name__=='__main__':
+    app.run(host=os.environ.get('PBL4_UPLOAD_BIND_HOST','127.0.0.1'),
+            port=int(os.environ.get('PBL4_UPLOAD_PORT','5000')),debug=False)

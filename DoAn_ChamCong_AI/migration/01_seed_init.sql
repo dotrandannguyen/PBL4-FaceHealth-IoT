@@ -31,13 +31,5 @@ INSERT INTO `LoaiCanhBao` (`MaLoaiCB`, `TenLoaiCB`) VALUES
 (2, 'Cảnh báo ngủ gật')
 ON DUPLICATE KEY UPDATE `TenLoaiCB`=VALUES(`TenLoaiCB`);
 
--- 6. Nhan vien quan tri mau (MaNV = 1)
-INSERT INTO `NhanVien` (`MaNV`, `HoTen`, `AnhKhuonMat`, `MaVaiTro`) VALUES
-(1, 'Quản Trị Viên Hệ Thống', NULL, 1)
-ON DUPLICATE KEY UPDATE `HoTen`=VALUES(`HoTen`);
-
--- 7. Tai khoan quan tri: username: admin / password: password123 (hoac 123456)
--- Hash bcrypt tieu chuan cho mat khau '123456':
-INSERT INTO `TaiKhoan` (`MaTK`, `MaNV`, `TenDangNhap`, `MatKhau`) VALUES
-(1, 1, 'admin', '$2y$10$ZcKps/RyxchOdXfZsSnQf.UsaiGZwk4L7TmtCON4sxWFZArP29dKW')
-ON DUPLICATE KEY UPDATE `TenDangNhap`=VALUES(`TenDangNhap`), `MatKhau`=VALUES(`MatKhau`);
+-- Administrator accounts are created explicitly with tools/create_admin.php.
+-- No default password; rerunning this seed never changes existing accounts.

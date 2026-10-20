@@ -19,12 +19,24 @@ final class CameraFrameClient
         $context = stream_context_create([
             'http' => [
                 'method' => 'GET',
+                'header' => 'Authorization: Bearer ' . (getenv('PBL4_INTERNAL_TOKEN') ?: '') . "\r\n",
                 'timeout' => 1.5,
                 'ignore_errors' => true,
+                'follow_location' => 0,
             ],
         ]);
-        $image = @file_get_contents($this->frameUrl, false, $context);
+        $image = @file_get_contents($this->frameUrl, false, $context, 0, 5 * 1024 * 1024 + 1);
+        $status = 0;
+        foreach ($http_response_header ?? [] as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/', $header, $matches)) {
+                $status = (int)$matches[1];
+            }
+        }
+        if ($status !== 200 || !is_string($image) || strlen($image) > 5 * 1024 * 1024) {
+            return null;
+        }
+        $size = @getimagesizefromstring($image);
 
-        return is_string($image) && str_starts_with($image, "\xFF\xD8") ? $image : null;
+        return $size !== false && $size[2] === IMAGETYPE_JPEG && $size[0] * $size[1] <= 16000000 ? $image : null;
     }
 }

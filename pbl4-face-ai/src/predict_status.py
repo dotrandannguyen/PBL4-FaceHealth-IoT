@@ -311,14 +311,21 @@ def to_serializable(result: dict) -> dict:
 if __name__ == "__main__":
     import cv2
     import time
+    import argparse
+    from camera_source import CameraSource
+
+    parser = argparse.ArgumentParser(description="Test Trang Thai AI 2 (Realtime)")
+    parser.add_argument("--camera", type=str, default="0", help="Camera source ('0', '1', hoac 'esp32')")
+    args = parser.parse_args()
 
     try:
         predictor = StatusPredictor(smoothing_window=5, max_yaw_deg=25.0)
 
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        print("🚀 Bật webcam để test realtime (Đã nâng cấp Streaming + Làm mịn nhãn)...")
+        cap = CameraSource(source=args.camera, width=1280, height=720)
+        is_esp32 = getattr(cap, "is_esp32", False)
+        cam_tag = "📡 ESP32-CAM (Node 1)" if is_esp32 else f"📷 Webcam {args.camera}"
+
+        print(f"🚀 Bật Camera [{cam_tag}] để test realtime (Streaming + Làm mịn nhãn)...")
         print("Nhấn 'Q' để thoát.")
 
         # Bảng màu và thông tin hiển thị
@@ -336,8 +343,9 @@ if __name__ == "__main__":
 
         while True:
             ret, frame = cap.read()
-            if not ret:
-                break
+            if not ret or frame is None:
+                time.sleep(0.03)
+                continue
 
             curr_time = time.time()
             fps = 0.9 * fps + 0.1 * (1.0 / max(curr_time - prev_time, 1e-5))
@@ -357,16 +365,16 @@ if __name__ == "__main__":
             cfg = STATUS_CONFIG.get(status, {"desc": f"Trang thai: {status}", "color": (200, 200, 200)})
 
             # 1. Header Box hiển thị trạng thái
-            cv2.rectangle(display_frame, (15, 15), (550, 125), (20, 20, 20), -1)
-            cv2.rectangle(display_frame, (15, 15), (550, 125), cfg["color"], 2)
+            cv2.rectangle(display_frame, (15, 15), (580, 145), (20, 20, 20), -1)
+            cv2.rectangle(display_frame, (15, 15), (580, 145), cfg["color"], 2)
 
             conf_str = f" ({result['confidence']*100:.1f}%)" if result.get("is_valid") else ""
             cv2.putText(
                 display_frame,
                 f"{cfg['desc']}{conf_str}",
-                (30, 50),
+                (30, 48),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
+                0.72,
                 cfg["color"],
                 2,
             )
@@ -381,27 +389,28 @@ if __name__ == "__main__":
             cv2.putText(
                 display_frame,
                 stats_str,
-                (30, 85),
+                (30, 80),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
                 (220, 220, 220),
                 1,
             )
 
-            # 3. FPS & Hướng dẫn
+            # 3. FPS, Nguồn camera & Hướng dẫn
             cv2.putText(
                 display_frame,
-                f"FPS: {fps:.1f} | Nhan 'Q' de thoat",
-                (30, 112),
+                f"FPS: {fps:.1f} | Nguon: {cam_tag} | Nhan 'Q' de thoat",
+                (30, 110),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (180, 180, 180),
+                (180, 220, 255),
                 1,
             )
 
             cv2.imshow("AI 2 - Trạng Thái Thể Trạng (Streaming + Smooth)", display_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+
 
         cap.release()
         cv2.destroyAllWindows()

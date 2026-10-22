@@ -39,6 +39,7 @@ if str(SRC_DIR) not in sys.path:
 
 from src.face_engine import FaceEngine
 from src.verify import load_db
+from src.camera_source import CameraSource
 
 app = Flask(__name__)
 
@@ -50,7 +51,7 @@ PORT = int(os.environ.get("AI_PORT", 5001))
 _engine: Optional[FaceEngine] = None
 _engine_lock = threading.Lock()
 
-_cap: Optional[cv2.VideoCapture] = None
+_cap: Optional[CameraSource] = None
 _camera_lock = threading.Lock()
 
 
@@ -65,16 +66,16 @@ def get_face_engine() -> FaceEngine:
     return _engine
 
 
-def get_camera() -> cv2.VideoCapture:
+def get_camera() -> CameraSource:
     global _cap
     if _cap is None or not _cap.isOpened():
         with _camera_lock:
             if _cap is None or not _cap.isOpened():
-                print(">> [AI Service] Đang mở Webcam 0...")
-                _cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
-                _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cam_source = os.environ.get("CAMERA_SOURCE", "esp32")
+                print(f">> [AI Service] Đang mở Camera ({cam_source})...")
+                _cap = CameraSource(source=cam_source, width=640, height=480)
     return _cap
+
 
 
 def estimate_pose(kps: np.ndarray) -> Tuple[str, Dict[str, float]]:

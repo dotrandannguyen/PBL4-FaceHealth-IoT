@@ -27,6 +27,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from src.face_engine import FaceEngine
+from src.camera_source import CameraSource
 
 EMBEDDINGS_PATH = CURRENT_DIR / 'data' / 'embeddings.pkl'
 REGISTERED_DIR  = CURRENT_DIR / 'data' / 'registered'
@@ -156,15 +157,20 @@ def delete_user_from_mariadb(sid: str):
 
 
 class RegisterApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, camera_source="0", init_id="", init_name=""):
         super().__init__()
-        self.title('PBL4 - Dang ky Khuon mat Nhan vien')
+        self.camera_source = camera_source
+        self.init_id = init_id
+        self.init_name = init_name
+
+        source_label = "ESP32-CAM (WiFi Node 1)" if str(camera_source).lower() == "esp32" else "Webcam Máy Tính"
+        self.title(f'PBL4 - Đăng ký Khuôn mặt Sinh viên [{source_label}]')
         self.geometry('1200x750')
         self.minsize(1000, 650)
         self.configure(bg=DARK_BG)
         self.engine: Optional[FaceEngine] = None
         self.engine_loading: bool = True
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.cap: Optional[CameraSource] = None
         self.running: bool = True
         self.current_step: int = 0
         self.embeddings_collected: List[np.ndarray] = []
@@ -177,6 +183,7 @@ class RegisterApp(tk.Tk):
         self._load_engine_async()
         self._open_webcam()
         self._poll_frame()
+
 
     def _build_ui(self):
         hdr = tk.Frame(self, bg=PANEL_BG, height=56)
@@ -231,13 +238,13 @@ class RegisterApp(tk.Tk):
         tk.Label(card, text='Thong tin Nhan vien', font=FONT_BOLD,
                  bg=CARD_BG, fg=ACCENT2).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
         tk.Label(card, text='Student ID:', font=FONT_MAIN, bg=CARD_BG, fg=TEXT_DIM).grid(row=1, column=0, sticky='w', pady=3)
-        self.id_var = tk.StringVar()
+        self.id_var = tk.StringVar(value=self.init_id)
         self.id_entry = tk.Entry(card, textvariable=self.id_var, font=FONT_MAIN,
                                   bg='#21262d', fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
                                   relief='flat', bd=6, width=20)
         self.id_entry.grid(row=1, column=1, sticky='ew', padx=(8, 0))
         tk.Label(card, text='Ten nhan vien:', font=FONT_MAIN, bg=CARD_BG, fg=TEXT_DIM).grid(row=2, column=0, sticky='w', pady=3)
-        self.name_var = tk.StringVar()
+        self.name_var = tk.StringVar(value=self.init_name)
         self.name_entry = tk.Entry(card, textvariable=self.name_var, font=FONT_MAIN,
                                     bg='#21262d', fg=TEXT_MAIN, insertbackground=TEXT_MAIN,
                                     relief='flat', bd=6, width=20)
@@ -317,17 +324,14 @@ class RegisterApp(tk.Tk):
         threading.Thread(target=_load, daemon=True).start()
 
     def _open_webcam(self):
-        self.cap = cv2.VideoCapture(0)
-        if self.cap.isOpened():
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap = CameraSource(source=self.camera_source, width=1280, height=720)
 
     def _poll_frame(self):
         if not self.running:
             return
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
-            if ret:
+            if ret and frame is not None:
                 vis = self._process_frame(frame)
                 self._show_frame(vis)
         self.after(33, self._poll_frame)
@@ -335,6 +339,8 @@ class RegisterApp(tk.Tk):
     def _process_frame(self, frame):
         vis = frame.copy()
         h, w = frame.shape[:2]
+        is_esp32 = getattr(self.cap, "is_esp32", False)
+
         if self.engine is None or self.engine_loading:
             cv2.putText(vis, 'Dang tai InsightFace...', (30, h//2),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 215, 255), 2)
@@ -342,6 +348,8 @@ class RegisterApp(tk.Tk):
         if not self.is_capturing or self.capture_done:
             cv2.putText(vis, 'Nhan [Bat dau Dang ky] de bat dau', (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
+            cam_info = "Nguon: ESP32-CAM (WiFi Node 1)" if is_esp32 else "Nguon: Webcam May Tinh"
+            cv2.putText(vis, cam_info, (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
             return vis
         faces = self.engine.detect(frame)
         has_face = len(faces) > 0
@@ -361,19 +369,27 @@ class RegisterApp(tk.Tk):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
         sid = self.id_var.get().strip(); sname = self.name_var.get().strip()
         cv2.putText(vis, f'ID: {sid} | {sname}', (15, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # Nhãn nguồn camera
+        cam_tag = "[Nguon: ESP32-CAM]" if is_esp32 else "[Nguon: Webcam]"
+        cv2.putText(vis, cam_tag, (w - 180, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 220, 255), 1)
+
         hint_text = f'>> {step_hint} <<'
         (tw, _), _ = cv2.getTextSize(hint_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
         cv2.putText(vis, hint_text, ((w-tw)//2, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 200), 2)
+
         if has_face:
             self.ready_timer += 1
-            ratio = min(self.ready_timer / READY_FRAMES, 1.0)
+            # Giữ tư thế ổn định ~18 frames (khoảng 0.8s) rồi tự động chụp
+            target_frames = 18
+            ratio = min(self.ready_timer / target_frames, 1.0)
             bar_w = int((w - 40) * ratio)
             cv2.rectangle(vis, (20, h-48), (20+bar_w, h-34), (0, 220, 100), -1)
             cv2.rectangle(vis, (20, h-48), (w-20, h-34), (80, 80, 80), 1)
             self.progress_var.set(ratio * 100)
-            cv2.putText(vis, f'Dang nhan dien... {int(ratio*100)}%', (20, h-56),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 100), 1)
-            self.hint_var.set(f'Phat hien mat - {int(ratio*100)}%\n{step_hint}')
+            cv2.putText(vis, f'Giu tu the... {int(ratio*100)}%', (20, h-56),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 100), 1)
+            self.hint_var.set(f'{step_hint} ({int(ratio*100)}%)')
             if ratio >= 1.0 and self.flash_timer <= 0:
                 self._do_capture(frame, faces)
         else:
@@ -393,6 +409,7 @@ class RegisterApp(tk.Tk):
             cv2.putText(vis, done, ((w-tw2)//2, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 100), 3)
             self.flash_timer -= 1
         return vis
+
 
     def _show_frame(self, frame):
         cw = self.cam_canvas.winfo_width(); ch = self.cam_canvas.winfo_height()
@@ -512,6 +529,14 @@ class RegisterApp(tk.Tk):
 
 
 if __name__ == '__main__':
-    app = RegisterApp()
+    import argparse
+    parser = argparse.ArgumentParser(description="PBL4 Face Registration")
+    parser.add_argument("--camera", type=str, default="0", help="Camera source ('0', '1', hoac 'esp32')")
+    parser.add_argument("--id", type=str, default="", help="Student ID ban dau")
+    parser.add_argument("--name", type=str, default="", help="Ten sinh vien ban dau")
+    args = parser.parse_args()
+
+    app = RegisterApp(camera_source=args.camera, init_id=args.id, init_name=args.name)
     app.protocol('WM_DELETE_WINDOW', app.on_close)
     app.mainloop()
+

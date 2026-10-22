@@ -12,11 +12,17 @@ if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, os.path.join(ROOT_DIR, "src"))
 
 import cv2
 import numpy as np
-from src.face_engine import FaceEngine
+
+try:
+    from face_engine import FaceEngine
+except ImportError:
+    from src.face_engine import FaceEngine
 
 
 def main():

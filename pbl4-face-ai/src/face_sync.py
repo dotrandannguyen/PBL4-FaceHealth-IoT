@@ -26,6 +26,20 @@ class SyncConflict(ValueError):
     pass
 
 
+def list_employees():
+    """Read the official roster, including people without registered faces."""
+    connection = connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT nv.MaNV, nv.HoTen, COUNT(fe.MaEmbedding) '
+                           'FROM NhanVien nv LEFT JOIN FaceEmbedding fe ON fe.MaNV=nv.MaNV '
+                           'GROUP BY nv.MaNV, nv.HoTen ORDER BY nv.MaNV')
+            return [dict(id=int(row[0]), name=row[1] or '', n_images=int(row[2]))
+                    for row in cursor.fetchall()]
+    finally:
+        connection.close()
+
+
 def _rows(cursor, identity):
     cursor.execute('SELECT MaEmbedding, VectorData, AnhKhuonMat FROM FaceEmbedding WHERE MaNV=%s ORDER BY MaEmbedding', (identity,))
     return cursor.fetchall()

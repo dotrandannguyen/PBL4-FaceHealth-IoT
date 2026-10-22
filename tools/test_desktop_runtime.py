@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -137,6 +138,68 @@ class PendingTests(unittest.TestCase):
             self.assertEqual(self.store.retry()['pending'], 0)
             save.assert_not_called()
 
+    def test_targeted_registration_only_submits_selected_job(self):
+        other_id = self.store.stage(1, 'Previously waiting', samples())
+        selected_id = self.store.stage(2, 'Selected employee', samples(10))
+        other_path = self.store.directory/'pending'/(other_id+'.json')
+        original = other_path.read_bytes()
+        with patch('src.desktop_enrollment.replace_samples') as save, patch('src.desktop_enrollment.refresh_gallery') as refresh:
+            result = self.store.retry(selected_id)
+        save.assert_called_once()
+        self.assertEqual(save.call_args.args[0],2)
+        refresh.assert_called_once_with(self.store.gallery_path)
+        self.assertEqual(result['jobs'],{selected_id:'completed'})
+        self.assertEqual((result['completed'],result['pending']),(1,1))
+        self.assertEqual(other_path.read_bytes(),original)
+        self.assertFalse((self.store.directory/'pending'/(selected_id+'.json')).exists())
+        self.assertTrue((self.store.directory/'receipts'/(selected_id+'.json')).exists())
+
+    def test_targeted_registration_reports_saved_until_gallery_refresh_succeeds(self):
+        selected_id = self.store.stage(1, 'Selected employee', samples())
+        other_id = self.store.stage(2, 'Unrelated waiting employee', samples(10))
+        other_path = self.store.directory/'pending'/(other_id+'.json')
+        other_before = other_path.read_bytes()
+        with patch('src.desktop_enrollment.replace_samples') as save, patch('src.desktop_enrollment.refresh_gallery',side_effect=OSError('offline')):
+            result = self.store.retry(selected_id)
+        save.assert_called_once()
+        self.assertEqual(result['jobs'],{selected_id:'saved'})
+        self.assertEqual((result['completed'],result['pending']),(0,2))
+        self.assertTrue(dict((job['id'],job) for _,job in self.store.pending())[selected_id]['db_saved'])
+        self.assertFalse((self.store.directory/'receipts'/(selected_id+'.json')).exists())
+        self.assertEqual(other_path.read_bytes(),other_before)
+        with patch('src.desktop_enrollment.replace_samples',side_effect=AssertionError('must not resubmit committed data')) as save, patch('src.desktop_enrollment.refresh_gallery'):
+            result = self.store.retry(selected_id)
+        save.assert_not_called()
+        self.assertEqual(result['jobs'],{selected_id:'completed'})
+        self.assertEqual((result['completed'],result['pending']),(1,1))
+        self.assertEqual(other_path.read_bytes(),other_before)
+
+    def test_targeted_conflict_preserves_selected_and_unrelated_batches(self):
+        other_id = self.store.stage(1, 'Do not submit', samples())
+        selected_id = self.store.stage(2, 'Conflicted employee', samples(10))
+        before = {path:path.read_bytes() for path,_ in self.store.pending()}
+        with patch('src.desktop_enrollment.replace_samples',side_effect=face_sync.SyncConflict('Web changed')) as save, patch('src.desktop_enrollment.refresh_gallery') as refresh:
+            result = self.store.retry(selected_id)
+        save.assert_called_once()
+        self.assertEqual(save.call_args.args[0],2)
+        refresh.assert_not_called()
+        self.assertEqual(result['jobs'],{selected_id:'conflict'})
+        self.assertEqual((result['completed'],result['pending']),(0,2))
+        self.assertTrue(result['errors'])
+        self.assertEqual({path:path.read_bytes() for path,_ in self.store.pending()},before)
+
+    def test_targeted_db_failure_remains_pending_without_publishing(self):
+        selected_id = self.store.stage(1, 'Selected employee', samples())
+        path,_ = self.store.pending()[0]
+        before = path.read_bytes()
+        with patch('src.desktop_enrollment.replace_samples',side_effect=OSError('DB unavailable')), patch('src.desktop_enrollment.refresh_gallery') as refresh:
+            result = self.store.retry(selected_id)
+        refresh.assert_not_called()
+        self.assertEqual(result['jobs'],{selected_id:'pending'})
+        self.assertEqual((result['completed'],result['pending']),(0,1))
+        self.assertEqual(path.read_bytes(),before)
+        self.assertFalse(self.store.gallery_path.exists())
+
     def test_conflict_and_corrupt_pending_are_preserved(self):
         self.store.stage(1, 'Test', samples())
         path, _ = self.store.pending()[0]
@@ -222,23 +285,94 @@ class PendingTests(unittest.TestCase):
         class Variable:
             def set(self, value):
                 self.value = value
+        class DeferredWorker:
+            def __init__(self):
+                self.tasks = []
+                self.errors = []
+            def submit(self, work, success, failure):
+                self.tasks.append((work, success, failure))
+            def complete(self):
+                work, success, failure = self.tasks.pop(0)
+                try:
+                    result = work()
+                except Exception as error:
+                    self.errors.append(error)
+                    failure(error)
+                else:
+                    success(result)
         finished = []
+        worker = DeferredWorker()
         owner = types.SimpleNamespace(current_step=0, capture_done=False, samples_collected=[],
             embeddings_collected=[], ready_timer=0, flash_timer=0, progress_var=Variable(),
             conf_var=Variable(), hint_var=Variable(), _build_step_indicators=lambda: None,
-            _finalize_registration=lambda: finished.append(True))
-        with patch.dict(sys.modules, cv2=CV):
+            _finalize_registration=lambda: finished.append(True), is_capturing=True,
+            sample_busy=False, session_token=1, _sample_crops=[], io=worker,
+            _update_controls=lambda: None, _refresh_thumbnails=lambda: None)
+        ready = types.SimpleNamespace(ready=True, bbox=(0, 0, 8, 8))
+        with patch.dict(sys.modules, cv2=CV), patch.object(gui_register, 'assess_frame', return_value=ready), \
+                patch.dict(gui_register.capture_sample.__globals__, assess_frame=lambda *unused: ready):
             for index in range(5):
                 frame = np.full((8,8,3), index, dtype=np.uint8)
                 if index == 1:
                     gui_register.RegisterApp._do_capture(owner, frame, [face(index,axis=2)])
+                    self.assertTrue(owner.sample_busy)
+                    worker.complete()
                     self.assertEqual(owner.current_step,1)
                 gui_register.RegisterApp._do_capture(owner, frame, [face(index)])
+                self.assertEqual(owner.current_step,index, 'Pending work must not advance the UI')
+                self.assertTrue(owner.sample_busy)
+                worker.complete()
+                if index == 0:
+                    self.assertFalse(worker.errors)
                 self.assertEqual(owner.current_step,index+1)
+                self.assertFalse(owner.sample_busy)
         self.assertEqual(len(finished),1)
+        self.assertEqual(len(worker.errors),1)
+        self.assertIn('khớp', str(worker.errors[0]))
         self.assertEqual([sample['pose'] for sample in owner.samples_collected],list(POSES))
         for index,sample in enumerate(owner.samples_collected):
             self.assertEqual(sample['image'],image_bytes(index))
+
+
+class EmployeeRosterTests(unittest.TestCase):
+    def test_roster_uses_official_names_and_includes_employee_without_face_samples(self):
+        database = sqlite3.connect(':memory:')
+        self.addCleanup(database.close)
+        database.executescript('''
+            CREATE TABLE NhanVien (MaNV INTEGER PRIMARY KEY, HoTen TEXT);
+            CREATE TABLE FaceEmbedding (MaEmbedding INTEGER PRIMARY KEY, MaNV INTEGER);
+            INSERT INTO NhanVien VALUES (2,'Employee with no face samples'),(1,'Official employee name');
+            INSERT INTO FaceEmbedding VALUES (1,1),(2,1),(3,1),(4,1),(5,1);
+        ''')
+        queries = []
+        class Cursor:
+            def __enter__(self):
+                self.cursor = database.cursor()
+                return self
+            def __exit__(self,*unused):
+                self.cursor.close()
+            def execute(self,query,params=None):
+                queries.append(query)
+                self.cursor.execute(query,params or ())
+            def fetchall(self):
+                return self.cursor.fetchall()
+        class Connection:
+            closed = False
+            def cursor(self):
+                return Cursor()
+            def close(self):
+                self.closed = True
+        connection = Connection()
+        with patch('src.face_sync.connect',return_value=connection):
+            result = DesktopEnrollment().employees()
+        self.assertEqual(result,[
+            {'id':1,'name':'Official employee name','n_images':5},
+            {'id':2,'name':'Employee with no face samples','n_images':0},
+        ])
+        self.assertTrue(connection.closed)
+        self.assertTrue(queries)
+        self.assertTrue(all(query.lstrip().upper().startswith('SELECT') for query in queries))
+        self.assertEqual(database.execute('SELECT COUNT(*) FROM FaceEmbedding').fetchone()[0],5)
 
 
 class RelayTests(unittest.TestCase):

@@ -220,3 +220,25 @@ Task tiếp theo: **Task 6 — ESP32/upload, cấu hình, hướng dẫn/CI và 
 Ảnh lỗi từ người dùng giúp phát hiện nhánh daily chưa được bộ test API/enrollment gọi tới. SELECT thật báo `Unknown column CLV.TrangThai in ON`: alias bảng ca được dùng trước JOIN, mặc dù DB vẫn kết nối. Đã sửa thứ tự JOIN, ưu tiên ca của bản ghi chấm công và giữ lịch sử sau đổi/ngừng ca; sửa thông báo lỗi không quy kết mọi exception thành mất kết nối.
 
 Bổ sung integration read-model daily/history (nhân viên chưa có ca/bản ghi, ca active/inactive, latest/tie, ngày biên, lọc/phân trang) cùng bốn request admin page sau login thật. Runner DB tạm chạy lại PASS: **89 HTTP checks (43 attendance + 46 enrollment/admin page), 14 desktop/runtime tests, DB/read-model/bootstrap**. Trên Docker PHP 8.2.34/MariaDB 10.11 hiện tại, controller/template render thành công ba biến thể daily/history/filter, status 200, không notice lỗi; chỉ đọc DB, không tạo session trình duyệt. Python/PHP/JS thay đổi và diff whitespace PASS. Người dùng đã yêu cầu commit toàn bộ gói sửa; không push trong lượt này. Giới hạn RF v2/phần cứng/CI remote ở Task 6 vẫn còn.
+
+
+#### Check-in khuôn mặt và vòng đời camera — 20/10/2026
+
+Người dùng đã thử thành công check-in bằng khuôn mặt với Web ACK; thể trạng Chưa đánh giá, không tạo số đo sinh trắc. Chế độ `--face-only --once` dùng cùng engine/danh tính/ba ảnh/bằng chứng/outbox; GUI Tkinter cũ giữ bố cục và nút chấm công gọi chế độ này. RF/cảm biến toàn luồng vẫn chưa nghiệm thu. Có launcher CMD cho GUI cũ và check-in trực tiếp.
+
+Phát hiện camera singleton bị giữ sau khi cửa sổ đóng. Đã sửa tự release sau 3 giây không có frame request, release khi đọc lỗi, RLock và stale-timer guard; health không mở camera. Web dừng polling khi tab/đăng ký ẩn. Thử thật đọc một JPEG 640×480 trong RAM rồi ngừng: camera nhả sau 3,2 giây, service vẫn hoạt động. 62 core tests, 15 Flask tests, 91 HTTP checks và 14 desktop tests PASS trong phạm vi nêu ở checkpoint. Runtime log của check-in thật được giữ nguyên, không đưa vào commit nguồn tự động; thay đổi sau ac3447b chưa commit.
+
+
+#### Hậu kiểm UX thu thập AI 2 — 20/10/2026
+
+Popup thu/train cũ gộp lỗi subprocess và thoát không có mẫu nên không chẩn đoán được lần thất bại người dùng gửi. Đã tách exit 1/2, giữ stdout/stderr từng lần trong `.pbl4-run/training`, hiển thị chi tiết và log path. Collector thử lại camera tạm mất tối đa 10 giây (không ghép chuỗi qua mất frame), hỗ trợ Q/X khi chờ và không reset chuỗi vì key-repeat cùng nhãn; thêm hướng dẫn khi dữ liệu mặt/timing không hợp lệ. 62 core + 15 runtime training/collector tests PASS; không tự tạo dữ liệu người thật hoặc ghi model triển khai. Chưa có CSV v2 thực tế, cần người dùng mở lại GUI và thu mẫu. Không kết luận nguyên nhân lần cũ khi stderr chưa được lưu.
+
+
+#### Test AI 2 sau khi có model v2 — 20/10/2026
+
+Dataset hiện 136 chuỗi của hai người đủ ba nhãn; model do người dùng train đã tương thích sklearn1.7.2, SHA dataset khớp, 75 train/61 test. Chưa có benchmark/kiểm chứng độ chính xác ngoài dữ liệu này. Đã sửa Test Trạng thái thoát im lặng khi camera read đầu fail: retry có giới hạn/cửa sổ chờ, Q/X và reset khi mất ảnh; GUI có worker quản lý test riêng, tránh mở lặp, hiện lỗi và log. 62 core +21 runtime tests PASS, đã quan sát cửa sổ Status inference trên desktop đang dùng camera. TEST_AI2.cmd là launcher trực tiếp; cần mở lại GUI để nhận mã nút mới. Không đổi model/dataset hoặc tạo chấm công trong lượt sửa.
+
+
+#### Hai AI trong cùng phiên chấm công — 20/10/2026
+
+Theo yêu cầu mới, GUI mặc định bật cả AI 1/AI 2 với mode camera-only, không cần Test Trạng thái riêng và không giả lập sensor. UI hiện kết quả AI 2 riêng kể cả ca hôm nay đã completed; giữ nguyên lịch sử ca đã xong. Nhịp tim/SpO2 chưa đo là null, không kết luận sức khỏe đầy đủ từ riêng mặt. 65 core +23 runtime tests PASS, thêm regression route GUI/phím tắt không gọi MockIoT. Đã mở và quan sát cửa sổ chung; log phiên thật xác nhận identity_matched=true, AI2 valid/Normal, hr/spo2 null, Web completed. Không train lại/model/dataset; chưa benchmark hay kiểm chứng cảm biến.

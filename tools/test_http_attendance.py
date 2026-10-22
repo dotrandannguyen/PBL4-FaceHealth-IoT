@@ -180,6 +180,23 @@ def run_http_tests(php, root, env, directory):
         if recovered.get('event_id') != failed['event_id'] or recovered.get('action') != 'checkin':
             raise AssertionError('Retry after rollback did not preserve event/action')
 
+        # A face-only check-in has real identity/evidence but no health assessment.
+        before_face = json.loads(cli('http_inspect'))
+        face_only = dict(payload, event_id=str(uuid4()), MaNV=12, TrangThai='Unknown', NhipTim=None, SpO2=None)
+        face_result = expect(request(port, 'POST', '/api/chamcong', face_only, token=token), 200)
+        face_replay = expect(request(port, 'POST', '/api/chamcong', face_only, token=token), 200)
+        after_face = json.loads(cli('http_inspect'))
+        if (face_result.get('action') != 'checkin' or face_replay.get('duplicate') is not True
+                or after_face['ChamCong'] != before_face['ChamCong']+1
+                or after_face['AttendanceEvent'] != before_face['AttendanceEvent']+1):
+            raise AssertionError('Face-only replay did not preserve the check-in')
+        for table in ('LichSuSucKhoe', 'LichSuTrangThai', 'CanhBao'):
+            if after_face[table] != before_face[table]:
+                raise AssertionError('Face-only check-in fabricated health data: '+table)
+        row = next(row for row in after_face['attendance'] if int(row['MaNV'])==12)
+        if row['TheTrangVao'] != 'Chưa đánh giá' or row['ImageHash'] != hashlib.sha256(image).hexdigest():
+            raise AssertionError('Face-only status/evidence not preserved')
+
     # A missing token is a configuration error, not an open internal API.
     with php_server(php, root, env, directory, '') as port:
         expect(request(port, 'POST', '/api/chamcong', payload, token=token), 503)

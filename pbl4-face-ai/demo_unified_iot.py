@@ -237,7 +237,9 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         state_text = "SẴN SÀNG CHẤM CÔNG (CHẾ ĐỘ 3 ẢNH RỜI RẠC)"
         state_rgb = RGB_COLORS["SKY"]
         state_bgr = (233, 165, 14)
-        sub_text = "Đặt ngón tay lên cảm biến hoặc bấm [1] để chụp 3 ảnh (cách nhau 300ms)  |  [Q] Thoát"
+        sub_text = ("[SPACE] / [1] Chấm công bằng mặt • Thể trạng: Chưa đánh giá  |  [Q] Thoát"
+                    if info.get('face_only') else ("[SPACE] / [1] Chấm công + AI 2 • Chưa đo nhịp tim/SpO2  |  [Q] Thoát"
+                    if info.get('camera_only') else "Đặt ngón tay lên cảm biến hoặc bấm [1] để chụp 3 ảnh (cách nhau 300ms)  |  [Q] Thoát"))
         prog_ratio = 0.0
 
     elif state_name in ["CAPTURING", "WARMUP", "SCANNING"]:
@@ -252,7 +254,8 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         state_text = "ĐANG LƯU VÀ ĐỒNG BỘ..." if state_name == "FINALIZING" else "ĐANG PHÂN TÍCH 2 AI TRÊN 3 ẢNH..."
         state_rgb = RGB_COLORS["CYAN"]
         state_bgr = (255, 220, 0)
-        sub_text = "AI 1 lọc ảnh nét nhất • AI 2 phân tích động học cử động 3 mốc thời gian"
+        sub_text = ("Đang nhận diện cùng một người trên ba ảnh • Chưa đánh giá thể trạng"
+                    if info.get('face_only') else "AI 1 lọc ảnh nét nhất • AI 2 phân tích động học cử động 3 mốc thời gian")
         prog_ratio = 1.0
 
     elif state == SessionState.COMPLETED:
@@ -514,8 +517,15 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
         draw.text((lx1 + 18, ly1 + 108), modal_info["desc"], font=HUD_FONTS["body"], fill=RGB_COLORS["LIGHT_GRAY"])
         draw.text((lx1 + 18, ly1 + 132), modal_info["note"], font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
 
-        f_status = m_fusion.get("final_status", "Đạt chuẩn")
-        draw.text((lx1 + 18, ly1 + 175), "ĐÁNH GIÁ SỨC KHỎE", font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
+        mode = m_rec.get('assessment_mode', 'full')
+        f_status = m_fusion.get("final_status", "Chưa đánh giá")
+        assessment_title = 'ĐÁNH GIÁ SỨC KHỎE'
+        if mode == 'face_ai2':
+            assessment_title = 'THỂ TRẠNG KHUÔN MẶT (AI 2)'
+            f_status = {'Normal':'Bình thường','Fatigue':'Mệt mỏi','Exhausted':'Kiệt sức'}.get(m_rec.get('ai2_face_status'), 'Chưa phân tích được')
+        elif mode == 'face_only':
+            assessment_title = 'CHẾ ĐỘ PHIÊN'
+        draw.text((lx1 + 18, ly1 + 175), assessment_title, font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
         draw.text((lx1 + 18, ly1 + 195), f_status, font=HUD_FONTS["stat_val"], fill=m_rgb)
 
         # Cột Phải
@@ -524,21 +534,22 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
             draw.text((rx1 + 20, ry1 + 52), "• Mỗi ngày chỉ có 1 lần Check-out duy nhất.", font=HUD_FONTS["body"], fill=RGB_COLORS["LIGHT_GRAY"])
             draw.text((rx1 + 20, ry1 + 82), "• Dữ liệu giờ ra đã được lưu an toàn vào hệ thống.", font=HUD_FONTS["body"], fill=RGB_COLORS["LIGHT_GRAY"])
             draw.text((rx1 + 20, ry1 + 112), "• Quét lại không làm thay đổi giờ ra của bạn.", font=HUD_FONTS["body"], fill=RGB_COLORS["LIGHT_GRAY"])
-            draw.text((rx1 + 20, ry1 + 155), "Hỗ trợ: Nếu cần điểm danh lại, vui lòng liên hệ", font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
-            draw.text((rx1 + 20, ry1 + 176), "Quản trị viên trên trang Web để xóa phiên.", font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
+            draw.text((rx1 + 20, ry1 + 155), "AI 2 vẫn phân tích và hiển thị ở phiên này." if mode == 'face_ai2' else "Giờ vào/ra đã hoàn thành được giữ nguyên.", font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
+            draw.text((rx1 + 20, ry1 + 176), "Kết quả lần quét này không ghi đè ca đã xong.", font=HUD_FONTS["body_small"], fill=RGB_COLORS["GRAY"])
 
         else:
-            face_st = m_rec.get("ai2_face_status", "Normal")
+            face_st = m_rec.get("ai2_face_status", "Unknown")
             face_st_vn = {
                 "Normal": "Tỉnh táo & Sẵn sàng",
                 "Fatigue": "Mệt mỏi / Cần nghỉ ngơi",
                 "Exhausted": "Kiệt sức / Buồn ngủ",
-                "Turned_Head": "Lệch góc nhìn"
+                "Turned_Head": "Lệch góc nhìn",
+                "Unknown": "Chưa đánh giá"
             }.get(face_st, face_st)
 
             iot = m_rec.get("iot_metrics", {})
-            hr_val = iot.get("hr", 75)
-            spo2_val = iot.get("spo2", 98)
+            hr_val = iot.get("hr") or "--"
+            spo2_val = iot.get("spo2") or "--"
             recom = m_fusion.get("recommendation", "Trạng thái ổn định.")
 
             # Khối 1: Thể trạng
@@ -571,14 +582,20 @@ def main():
     parser.add_argument("--serial-port", type=str, default=None, help="Cổng Serial ESP32 (ví dụ: COM3 hoặc /dev/ttyUSB0)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate Serial (mặc định: 115200)")
     parser.add_argument("--threshold", type=float, default=0.45, help="Ngưỡng nhận diện khuôn mặt (mặc định: 0.45)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--face-only', action='store_true', help='Chỉ chấm công khuôn mặt; không RF hoặc số đo IoT giả')
+    mode.add_argument('--camera-only', action='store_true', help='Nhận diện + AI 2 qua webcam, không giả lập nhịp tim/SpO2')
+    parser.add_argument('--once', action='store_true', help='Đóng sau một lần xử lý, tránh quét tiếp thành checkout')
     args = parser.parse_args()
+    if (args.face_only or args.camera_only) and args.serial_port:
+        parser.error('Chế độ camera không đọc cảm biến Serial')
 
     print("\n=======================================================")
     print("🚀 KHỞI ĐỘNG HỆ THỐNG ĐIỂM DANH THÔNG MINH PBL4 (UNIFIED AI + IOT)")
     print("=======================================================")
 
     # Khởi tạo Unified Attendance Engine
-    engine = UnifiedAttendanceEngine(face_threshold=args.threshold)
+    engine = UnifiedAttendanceEngine(face_threshold=args.threshold, face_only=args.face_only, camera_only=args.camera_only)
     mock_iot = MockHardwareController(engine)
 
     # Nếu có cổng Serial thật
@@ -600,22 +617,40 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("\n[Demo] 🎮 HƯỚNG DẪN ĐIỀU KHIỂN:")
-    print("  [SPACE] hoặc [1] : Bắt đầu phiên chấm công BÌNH THƯỜNG (Bio_Normal)")
-    print("  [2]             : Bắt đầu phiên CĂNG THẲNG / TẬP THỂ DỤC (Bio_Warning)")
-    print("  [3]             : Bắt đầu phiên CẢNH BÁO Y TẾ (Bio_Danger: HR cao, SpO2 tụt)")
+    if args.face_only:
+        print('  [SPACE] / [1]    : Chấm công khuôn mặt; thể trạng Chưa đánh giá, không đo nhịp tim/SpO2')
+        print('  Phiên mới có thể ghi vào/ra thật trên Web. Chỉ nhấn một lần khi đã sẵn sàng.')
+    elif args.camera_only:
+        print('  [SPACE] / [1]    : Chấm công + AI 2; không giả lập nhịp tim/SpO2')
+        print('  Kết quả AI 2 vẫn hiện nếu bạn đã hoàn thành ca hôm nay; giờ vào/ra cũ được giữ nguyên.')
+    else:
+        print("  [SPACE] hoặc [1] : Bắt đầu phiên chấm công BÌNH THƯỜNG (Bio_Normal)")
+        print("  [2]             : Bắt đầu phiên CĂNG THẲNG / TẬP THỂ DỤC (Bio_Warning)")
+        print("  [3]             : Bắt đầu phiên CẢNH BÁO Y TẾ (Bio_Danger: HR cao, SpO2 tụt)")
     print("  [a]             : Rút tay ra sớm giữa chừng (Hủy phiên ABORT_SESSION)")
-    print("  [t]             : Kiểm thử Timeout thiếu IoT (Không gửi gói DONE)")
+    if not args.face_only and not args.camera_only:
+        print("  [t]             : Kiểm thử Timeout thiếu IoT (Không gửi gói DONE)")
     print("  [q]             : Thoát chương trình an toàn\n")
 
     prev_time = time.time()
     fps = 30.0
+    finished_at = None
+    window_title = 'PBL4 - CHAM CONG KHUON MAT' if args.face_only else ('PBL4 - CHAM CONG + AI 2' if args.camera_only else 'PBL4 - Unified AI + IoT')
+    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_title, 960, 720)
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("[Demo] Lỗi đọc frame từ camera!")
-                break
+                engine.abort_session('CAMERA_FRAME_UNAVAILABLE')
+                engine.update(None)
+                waiting = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(waiting, 'Dang ket noi camera... Q de thoat', (15, 60), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 220, 255), 2)
+                cv2.imshow(window_title, waiting)
+                if cv2.waitKey(100) & 0xff == ord('q') or cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                continue
 
             curr_time = time.time()
             fps = 0.9 * fps + 0.1 * (1.0 / max(curr_time - prev_time, 1e-5))
@@ -623,29 +658,43 @@ def main():
 
             # Update engine
             info = engine.update(frame)
+            if args.once and info['state'] == SessionState.COMPLETED and finished_at is None:
+                finished_at = time.monotonic()
+                result = (info.get('completed_record') or {}).get('web_result', {})
+                print('[Attendance] action=' + str(result.get('action')) + ' status=' + str(result.get('status')))
 
             # Vẽ HUD
-            vis = draw_hud(frame, info, fps)
+            display_frame = cv2.resize(frame, (960, 720)) if args.face_only or args.camera_only else frame
+            vis = draw_hud(display_frame, info, fps)
 
-            cv2.imshow("PBL4 - He Thong Diem Danh Thong Minh (Unified AI + IoT)", vis)
+            cv2.imshow(window_title, vis)
             key = cv2.waitKey(1) & 0xFF
+            if cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
+                break
+            if finished_at is not None:
+                if key == ord('q') or time.monotonic() - finished_at >= 3:
+                    break
+                continue
 
             if key == ord("q"):
                 print("[Demo] Người dùng bấm Q để thoát.")
                 break
             elif key in [ord(" "), ord("1")]:
-                print("[Demo] Phím [1] / [SPACE] -> Giả lập Bio_Normal")
-                mock_iot.trigger_normal()
-            elif key == ord("2"):
+                if args.face_only or args.camera_only:
+                    engine.start_session()
+                else:
+                    print("[Demo] Phím [1] / [SPACE] -> Giả lập Bio_Normal")
+                    mock_iot.trigger_normal()
+            elif key == ord("2") and not args.face_only and not args.camera_only:
                 print("[Demo] Phím [2] -> Giả lập Bio_Warning")
                 mock_iot.trigger_warning()
-            elif key == ord("3"):
+            elif key == ord("3") and not args.face_only and not args.camera_only:
                 print("[Demo] Phím [3] -> Giả lập Bio_Danger")
                 mock_iot.trigger_danger()
             elif key == ord("a"):
                 print("[Demo] Phím [A] -> Giả lập Abort (rút tay)")
                 mock_iot.trigger_abort()
-            elif key == ord("t"):
+            elif key == ord("t") and not args.face_only and not args.camera_only:
                 print("[Demo] Phím [T] -> Giả lập Timeout")
                 mock_iot.trigger_timeout_test()
 

@@ -62,7 +62,35 @@ _engine: Optional[FaceEngine] = None
 _engine_lock = threading.Lock()
 
 _cap: Optional[cv2.VideoCapture] = None
-_camera_lock = threading.Lock()
+_camera_lock = threading.RLock()
+_camera_last_used = 0.0
+_camera_idle_timer = None
+CAMERA_IDLE_SECONDS = 3.0
+
+
+def _arm_camera_idle_timer(delay=CAMERA_IDLE_SECONDS):
+    # Caller holds _camera_lock. One timer per idle interval, not per frame.
+    global _camera_idle_timer
+    if _camera_idle_timer is None:
+        timer = threading.Timer(delay, lambda: _release_idle_camera(timer))
+        _camera_idle_timer = timer
+        timer.daemon = True
+        timer.start()
+
+
+def _release_idle_camera(expected_timer):
+    global _camera_idle_timer
+    with _camera_lock:
+        if expected_timer is not _camera_idle_timer:
+            return
+        _camera_idle_timer = None
+        if _cap is None:
+            return
+        remaining = _camera_last_used + CAMERA_IDLE_SECONDS - time.monotonic()
+        if remaining > 0:
+            _arm_camera_idle_timer(remaining)
+        else:
+            release_camera()
 
 
 def get_face_engine() -> FaceEngine:
@@ -78,20 +106,23 @@ def get_face_engine() -> FaceEngine:
 
 
 def get_camera() -> cv2.VideoCapture:
-    global _cap
-    if _cap is None or not _cap.isOpened():
-        with _camera_lock:
-            if _cap is None or not _cap.isOpened():
-                print(">> [AI Service] Đang mở Webcam 0...")
-                index = int(os.environ.get('PBL4_CAMERA_ID', '0'))
-                backend = os.environ.get('PBL4_CAMERA_BACKEND', 'dshow' if sys.platform == 'win32' else 'auto')
-                api = {'dshow': cv2.CAP_DSHOW, 'msmf': cv2.CAP_MSMF, 'auto': cv2.CAP_ANY}.get(backend)
-                if api is None:
-                    raise ValueError('Invalid camera backend')
-                _cap = cv2.VideoCapture(index, api)
-                _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    return _cap
+    global _cap, _camera_last_used
+    with _camera_lock:
+        if _cap is None or not _cap.isOpened():
+            if _cap is not None:
+                _cap.release()
+            print(">> [AI Service] Đang mở webcam theo cấu hình...")
+            index = int(os.environ.get('PBL4_CAMERA_ID', '0'))
+            backend = os.environ.get('PBL4_CAMERA_BACKEND', 'dshow' if sys.platform == 'win32' else 'auto')
+            api = {'dshow': cv2.CAP_DSHOW, 'msmf': cv2.CAP_MSMF, 'auto': cv2.CAP_ANY}.get(backend)
+            if api is None:
+                raise ValueError('Invalid camera backend')
+            _cap = cv2.VideoCapture(index, api)
+            _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        _camera_last_used = time.monotonic()
+        _arm_camera_idle_timer()
+        return _cap
 
 
 @app.before_request
@@ -142,19 +173,27 @@ def decode_enrollment_request():
 
 @atexit.register
 def release_camera():
-    global _cap
+    global _cap, _camera_idle_timer
     with _camera_lock:
+        if _camera_idle_timer is not None:
+            _camera_idle_timer.cancel()
+            _camera_idle_timer = None
         if _cap is not None:
-            _cap.release()
-            _cap = None
+            try:
+                _cap.release()
+            finally:
+                _cap = None
 
 
 @app.route("/health", methods=["GET"])
 def health():
     """Kiểm tra sức khỏe service AI."""
+    with _camera_lock:
+        camera_open = _cap is not None and _cap.isOpened()
     return jsonify({
         "success": True,
         "model_ready": _engine is not None,
+        "camera_open": camera_open,
         "service": "PBL4 Face AI Service",
         "timestamp": int(time.time()),
     })
@@ -163,13 +202,19 @@ def health():
 @app.route("/internal/camera/frame", methods=["GET"])
 def camera_frame():
     """Trả về 1 frame JPEG từ webcam nội bộ phục vụ Web GUI."""
+    global _camera_last_used
     try:
-        cap = get_camera()
         with _camera_lock:
-            ret, frame = cap.read()
-
-        if not ret or frame is None:
-            return Response(b"", status=503, mimetype="image/jpeg")
+            cap = get_camera()
+            try:
+                ret, frame = cap.read()
+            except Exception:
+                release_camera()
+                raise
+            if not ret or frame is None:
+                release_camera()
+                return Response(b"", status=503, mimetype="image/jpeg")
+            _camera_last_used = time.monotonic()
 
         ret_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if not ret_enc:

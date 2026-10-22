@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -152,6 +153,125 @@ class EnrollmentApiTests(unittest.TestCase):
         gallery = build_gallery({'success': True, 'embeddings': [valid, sample(sample_id=2)]})
         self.assertEqual(set(gallery), {'SV001'})
         self.assertEqual(gallery['SV001']['n_images'], 2)
+
+class CameraApiTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 100.0
+        self.timers = []
+        test = self
+        class Timer:
+            def __init__(self, delay, callback):
+                self.delay, self.callback, self.cancelled = delay, callback, False
+                test.timers.append(self)
+            def start(self): pass
+            def cancel(self): self.cancelled = True
+        self.cap = types.SimpleNamespace(isOpened=lambda: True, set=lambda *args: None,
+            read=lambda: (True, np.zeros((8, 8, 3), dtype=np.uint8)), release=unittest.mock.Mock())
+        self.factory = unittest.mock.Mock(return_value=self.cap)
+        camera_cv = types.SimpleNamespace(VideoCapture=self.factory, CAP_DSHOW=700, CAP_MSMF=1400, CAP_ANY=0,
+            CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4, imencode=encode, IMWRITE_JPEG_QUALITY=1)
+        for context in (patch.dict(os.environ, PBL4_INTERNAL_TOKEN='camera-test-token'),
+                        patch.object(service, '_cap', None), patch.object(service, '_camera_idle_timer', None),
+                        patch.object(service, '_camera_last_used', 0.0), patch.object(service, 'cv2', camera_cv),
+                        patch.object(service.time, 'monotonic', lambda: self.now),
+                        patch.object(service.threading, 'Timer', Timer)):
+            context.start()
+            self.addCleanup(context.stop)
+        self.addCleanup(service.release_camera)
+        self.client = service.app.test_client()
+        self.headers = {'Authorization': 'Bearer camera-test-token'}
+
+    def frame(self):
+        return self.client.get('/internal/camera/frame', headers=self.headers)
+
+    def test_health_and_unauthorized_requests_never_open_camera(self):
+        self.assertFalse(self.client.get('/health').json['camera_open'])
+        self.assertEqual(self.client.get('/internal/camera/frame').status_code, 401)
+        self.factory.assert_not_called()
+
+    def test_idle_camera_releases_without_more_requests_and_reopens_on_demand(self):
+        self.assertEqual(self.frame().status_code, 200)
+        self.assertTrue(self.client.get('/health').json['camera_open'])
+        self.now += service.CAMERA_IDLE_SECONDS
+        self.timers[-1].callback()
+        self.cap.release.assert_called_once()
+        self.assertFalse(self.client.get('/health').json['camera_open'])
+        self.assertEqual(self.frame().status_code, 200)
+        self.assertEqual(self.factory.call_count, 2)
+
+    def test_active_clients_extend_idle_deadline_without_one_timer_per_frame(self):
+        self.frame()
+        first = self.timers[-1]
+        self.now += 2
+        self.frame()
+        self.assertEqual(len(self.timers), 1)
+        self.now += 1
+        first.callback()
+        self.cap.release.assert_not_called()
+        self.assertEqual(self.timers[-1].delay, 2)
+        self.now += 2
+        self.timers[-1].callback()
+        self.cap.release.assert_called_once()
+
+    def test_stale_cancelled_timer_cannot_release_reopened_camera(self):
+        self.frame()
+        stale = self.timers[-1]
+        service.release_camera()
+        self.frame()
+        current = self.timers[-1]
+        self.now += 100
+        stale.callback()
+        self.assertIs(service._camera_idle_timer, current)
+        self.assertEqual(self.cap.release.call_count, 1)
+        current.callback()
+        self.assertEqual(self.cap.release.call_count, 2)
+
+    def test_failed_read_releases_immediately(self):
+        self.cap.read = lambda: (False, None)
+        self.assertEqual(self.frame().status_code, 503)
+        self.cap.release.assert_called_once()
+        self.assertIsNone(service._cap)
+        self.assertTrue(self.timers[-1].cancelled)
+
+    def test_read_exception_releases_immediately(self):
+        self.cap.read = unittest.mock.Mock(side_effect=OSError('Camera disconnected'))
+        self.assertEqual(self.frame().status_code, 503)
+        self.cap.release.assert_called_once()
+        self.assertIsNone(service._cap)
+
+    def test_idle_callback_cannot_release_camera_during_frame_read(self):
+        self.frame()
+        timer = self.timers[-1]
+        self.now += 3
+        reading, finish = threading.Event(), threading.Event()
+        result = []
+        def read():
+            reading.set()
+            if not finish.wait(2):
+                raise RuntimeError('Test frame read timeout')
+            return True, np.zeros((8, 8, 3), dtype=np.uint8)
+        self.cap.read = read
+        def request_frame():
+            with service.app.test_client() as client:
+                result.append(client.get('/internal/camera/frame', headers=self.headers).status_code)
+        worker = threading.Thread(target=request_frame)
+        reaper = threading.Thread(target=timer.callback)
+        worker.start()
+        try:
+            self.assertTrue(reading.wait(2))
+            reaper.start()
+            self.cap.release.assert_not_called()
+        finally:
+            finish.set()
+            worker.join(2)
+            if reaper.ident is not None:
+                reaper.join(2)
+        self.assertEqual(result, [200])
+        self.cap.release.assert_not_called()
+        self.now += 3
+        self.timers[-1].callback()
+        self.cap.release.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0]] + remaining)

@@ -112,6 +112,7 @@
             return;
         }
         const refreshFrame = () => {
+            if (document.hidden || root.hidden) return;
             camera.src = `/?action=face_camera_frame&ts=${Date.now()}`;
         };
         refreshFrame();
@@ -167,10 +168,17 @@
     };
 
     const inspectPose = async () => {
-        if (!running || busy) return;
+        if (!running || busy || document.hidden || root.hidden) {
+            if (document.hidden || root.hidden) stableSince = 0;
+            return;
+        }
         busy = true;
         try {
             const { response, payload } = await post('face_enrollment_pose');
+            if (document.hidden || root.hidden) {
+                stableSince = 0;
+                return;
+            }
             if (!response.ok || !payload.success) {
                 stableSince = 0;
                 feedback.textContent = payload.message || 'Không đọc được frame từ camera.';
@@ -278,5 +286,16 @@
     });
     dialog.addEventListener('close', () => {
         dialogImage.removeAttribute('src');
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        stableSince = 0;
+        if (document.hidden) camera.removeAttribute('src');
+    });
+    window.addEventListener('pagehide', () => {
+        clearInterval(frameTimer);
+        frameTimer = null;
+        stopPosePolling();
+        camera.removeAttribute('src');
     });
 })();

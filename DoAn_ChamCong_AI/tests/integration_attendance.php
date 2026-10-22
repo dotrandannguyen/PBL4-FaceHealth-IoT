@@ -22,6 +22,28 @@ function event(string $id, int $employee = 1, string $status = 'Normal', int $of
         'NhipTim' => 80, 'SpO2' => 98, 'image' => null];
 }
 
+/** Each request uses a fresh PHP process/connection, like independent devices. */
+function processEventsIndependently(array $events): array {
+    $processes = [];
+    foreach ($events as $payload) {
+        $proc = proc_open([PHP_BINARY, __FILE__, 'worker', base64_encode(json_encode($payload, JSON_THROW_ON_ERROR))],
+            [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']], $pipes, null, null, ['bypass_shell'=>true]);
+        check(is_resource($proc), 'Could not start isolated attendance worker');
+        fclose($pipes[0]);
+        $processes[] = [$proc, $pipes];
+    }
+    $results = [];
+    foreach ($processes as [$proc, $pipes]) {
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        check(proc_close($proc) === 0, 'Independent attendance worker: ' . $err);
+        $results[] = json_decode($out, true, 512, JSON_THROW_ON_ERROR);
+    }
+    return $results;
+}
+
 if (($argv[1] ?? '') === 'worker') {
     $payload = json_decode(base64_decode($argv[2]), true, 512, JSON_THROW_ON_ERROR);
     echo json_encode((new AttendanceService())->processEvent(AttendancePayload::fromArray($payload)), JSON_THROW_ON_ERROR);
@@ -142,4 +164,60 @@ $vector = pack('g*', ...array_fill(0,512,1.0));
 FaceSample::requireSameIdentity($vector,$vector);
 try { FaceSample::vector(pack('g*', ...array_fill(0,512,NAN))); throw new RuntimeException('Accepted NaN'); }
 catch (InvalidArgumentException $expected) {}
-echo "PASS: fresh schema, repeatable migration, check-in/out, replay, conflict, Unknown, rollback, six concurrent requests, historical shift, ordering, device validation, embeddings\n";
+// The daily quota is authoritative in MariaDB, across restarts and devices.
+$pdo->exec("INSERT INTO ThietBi VALUES (2,'Second test device','Online');
+    INSERT INTO NhanVien (MaNV,HoTen,MaVaiTro) VALUES
+    (4,'Daily quota restart',2),(5,'Concurrent checkout quota',2),(6,'Concurrent checkin quota',2)");
+$dailyIn = event('a0000000-0000-4000-8000-000000000001', 4);
+$dailyOut = event('a0000000-0000-4000-8000-000000000002', 4, 'Fatigue', -1800);
+$dailyOut['MaTB'] = 2;
+$dailyAgain = event('a0000000-0000-4000-8000-000000000003', 4, 'Exhausted', -900);
+check(processEventsIndependently([$dailyIn])[0]['action'] === 'checkin', 'Restarted process check-in');
+check(processEventsIndependently([$dailyOut])[0]['action'] === 'checkout', 'Second device check-out');
+$beforeCompleted = $pdo->query('SELECT * FROM ChamCong WHERE MaNV=4')->fetchAll();
+$healthBeforeCompleted = (int)$pdo->query('SELECT COUNT(*) FROM LichSuSucKhoe WHERE MaNV=4')->fetchColumn();
+$stateBeforeCompleted = (int)$pdo->query('SELECT COUNT(*) FROM LichSuTrangThai WHERE MaNV=4')->fetchColumn();
+$alertBeforeCompleted = (int)$pdo->query('SELECT COUNT(*) FROM CanhBao WHERE MaNV=4')->fetchColumn();
+$completed = processEventsIndependently([$dailyAgain])[0];
+check($completed['status'] === 'completed' && $completed['action'] === 'completed', 'Check-in reopened a checked-out day');
+$completedReplay = processEventsIndependently([$dailyAgain])[0];
+check($completedReplay['action'] === 'completed' && $completedReplay['duplicate'] === true, 'Completed event replay changed the quota');
+check($pdo->query('SELECT * FROM ChamCong WHERE MaNV=4')->fetchAll() === $beforeCompleted, 'Completed event changed check-in/out data');
+check((int)$pdo->query('SELECT COUNT(*) FROM LichSuSucKhoe WHERE MaNV=4')->fetchColumn() === $healthBeforeCompleted, 'Completed event added health');
+check((int)$pdo->query('SELECT COUNT(*) FROM LichSuTrangThai WHERE MaNV=4')->fetchColumn() === $stateBeforeCompleted, 'Completed event added state');
+check((int)$pdo->query('SELECT COUNT(*) FROM CanhBao WHERE MaNV=4')->fetchColumn() === $alertBeforeCompleted, 'Completed event added alerts');
+$newDay = $dailyIn;
+$newDay['event_id'] = 'a0000000-0000-4000-8000-000000000004';
+$newDay['occurred_at'] = date('Y-m-d\T00:00:00P');
+check(processEventsIndependently([$newDay])[0]['action'] === 'checkin', 'Daily quota did not reset at Vietnam midnight');
+check((int)$pdo->query('SELECT COUNT(*) FROM ChamCong WHERE MaNV=4')->fetchColumn() === 2, 'Expected exactly one record per date');
+
+// Six distinct checkout events race from two devices: only one may update GioRa.
+$primeCheckout = event('b0000000-0000-4000-8000-000000000001', 5);
+check(processEventsIndependently([$primeCheckout])[0]['action'] === 'checkin', 'Concurrent checkout setup');
+$checkoutRace = [];
+for ($i=0; $i<6; $i++) {
+    $payload = event(sprintf('b0000000-0000-4000-8000-%012d', $i+2), 5, 'Normal', -1800+$i*60);
+    $payload['MaTB'] = 1 + $i % 2;
+    $checkoutRace[] = $payload;
+}
+$checkoutActions = array_count_values(array_column(processEventsIndependently($checkoutRace), 'action'));
+check(($checkoutActions['checkout'] ?? 0) === 1 && ($checkoutActions['completed'] ?? 0) === 5,
+    'Concurrent distinct requests exceeded one daily checkout');
+check((int)$pdo->query('SELECT COUNT(*) FROM ChamCong WHERE MaNV=5')->fetchColumn() === 1, 'Concurrent checkout inserted another daily row');
+check((int)$pdo->query('SELECT COUNT(*) FROM LichSuSucKhoe WHERE MaNV=5')->fetchColumn() === 2, 'Completed races added health writes');
+
+// An absent daily row also needs serialization, not just event_id deduplication.
+$checkinRace = [];
+for ($i=0; $i<6; $i++) {
+    $payload = event(sprintf('c0000000-0000-4000-8000-%012d', $i+1), 6);
+    $payload['MaTB'] = 1 + $i % 2;
+    $checkinRace[] = $payload;
+}
+$checkinActions = array_count_values(array_column(processEventsIndependently($checkinRace), 'action'));
+check(($checkinActions['checkin'] ?? 0) === 1 && ($checkinActions['error'] ?? 0) === 5,
+    'Concurrent same-time requests exceeded one daily check-in');
+check((int)$pdo->query('SELECT COUNT(*) FROM ChamCong WHERE MaNV=6')->fetchColumn() === 1, 'Concurrent check-in inserted duplicate daily rows');
+check($pdo->query('SELECT GioRa FROM ChamCong WHERE MaNV=6')->fetchColumn() === null, 'Same-time race fabricated checkout');
+
+echo "PASS: fresh schema, repeatable migration, check-in/out, replay, conflict, Unknown, rollback, concurrent replay, historical shift, ordering, device validation, embeddings, daily one-in/one-out quota across devices/restarts, distinct-event races and next-day reset\n";

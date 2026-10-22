@@ -18,6 +18,8 @@ def run_collection(subject, output, *, camera_factory, extractor_factory, ui, cl
     dataset.inspect()  # Fail before opening hardware when schema is incompatible.
     recovered = dataset.recover()
     count = 0
+    missing_since = None
+    note = 'Nhan 1/2/3 mot lan va tha phim; giu mat chinh dien'
     with ExitStack() as resources:
         camera = camera_factory()
         resources.callback(camera.release)
@@ -29,27 +31,51 @@ def run_collection(subject, output, *, camera_factory, extractor_factory, ui, cl
             observed_at = clock()
             if not ok or frame is None:
                 collector.cancel()
-                raise RuntimeError('Camera frame unavailable; completed observations remain saved/pending')
+                if missing_since is None:
+                    missing_since = observed_at
+                if observed_at - missing_since >= 10:
+                    raise RuntimeError('Camera không trả ảnh trong 10 giây. Kiểm tra AI service và webcam; mẫu đã lưu được giữ nguyên.')
+                import numpy as np
+                waiting = np.zeros((480, 640, 3), dtype=np.uint8)
+                ui.putText(waiting, 'Dang ket noi camera... Q de thoat', (10, 50), ui.FONT_HERSHEY_SIMPLEX, .6, (0, 220, 220), 1)
+                ui.imshow('Status dataset v2', waiting)
+                if ui.waitKey(100) & 0xff == ord('q'):
+                    break
+                visible = getattr(ui, 'getWindowProperty', None)
+                if visible is not None and visible('Status dataset v2', ui.WND_PROP_VISIBLE) < 1:
+                    break
+                continue
+            missing_since = None
             features = extractor.extract_features(frame)
+            active_label = collector.label
             row = collector.observe(features, observed_at)
             if row is not None:
                 dataset.record(row)  # Journal first; a failed merge leaves a recoverable row.
                 count += 1
                 print('Saved sequence:',row['sequence_id'],row['label'])
+                note = f'Da luu {count} chuoi. Nhan nhan de thu chuoi tiep theo'
+            elif active_label is not None and collector.label is None:
+                note = 'Chuoi bi ngat (mat/goc mat/nhip anh). Nhan lai 1/2/3'
+                print('Incomplete sequence cancelled; need one usable frontal face and 300-600 ms snapshot gaps.')
             display = frame.copy()
             values = usable_observation(features)
-            text = f"EAR={values['ear']:.3f} MAR={values['mar']:.3f}" if values else 'No usable single frontal face'
+            text = f"EAR={values['ear']:.3f} MAR={values['mar']:.3f}" if values else 'Can 1 khuon mat hop le. Nhin thang camera'
             ui.putText(display,text,(10,30),ui.FONT_HERSHEY_SIMPLEX,.6,(220,220,220),1)
             ui.putText(display,f'1 Normal | 2 Fatigue | 3 Exhausted | Q save/exit | saved={count}',
                        (10,60),ui.FONT_HERSHEY_SIMPLEX,.5,(0,220,220),1)
             state = f'Collecting {collector.label}: {len(collector.features)}/3' if collector.label else 'Press a label key to start a new sequence'
             ui.putText(display,state,(10,90),ui.FONT_HERSHEY_SIMPLEX,.5,(0,220,100),1)
+            ui.putText(display,note,(10,120),ui.FONT_HERSHEY_SIMPLEX,.45,(220,220,100),1)
             ui.imshow('Status dataset v2',display)
             key = ui.waitKey(1) & 0xff
             if key == ord('q'):
                 collector.cancel()  # An incomplete sequence never becomes a row.
                 break
-            if key in LABEL_KEYS:
+            visible = getattr(ui, 'getWindowProperty', None)
+            if visible is not None and visible('Status dataset v2', ui.WND_PROP_VISIBLE) < 1:
+                collector.cancel()
+                break
+            if key in LABEL_KEYS and collector.label != LABEL_KEYS[key]:
                 collector.start(LABEL_KEYS[key])
     return dict(saved=count,recovered=recovered)
 

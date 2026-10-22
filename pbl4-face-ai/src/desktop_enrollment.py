@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from .atomic_storage import atomic_write
 from .enrollment_samples import prepare_samples
-from .face_sync import employee_id, replace_samples, delete_samples, refresh_gallery, SyncConflict
+from .face_sync import employee_id, replace_samples, delete_samples, refresh_gallery, list_employees, SyncConflict
 from .gallery_payload import gallery_revision
 from .gallery_store import GalleryCache, gallery_lock
 
@@ -92,12 +92,19 @@ class DesktopEnrollment:
         return dict(completed=0, pending=len(self.pending()), errors=[],
                     message=f'Đã lưu trữ {archived} batch chờ của NV {identity}; giữ nguyên DB và bản batch trong archived.')
 
-    def retry(self):
+    def employees(self):
+        return list_employees()
+
+    def retry(self, job_id=None):
+        """Retry one explicit registration, or the full queue for maintenance."""
         import numpy as np
         completed, errors = 0, []
+        jobs = {}
         blocked = set()
         with gallery_lock(self.directory / 'queue'):
             for path, job in self.pending():
+                if job_id is not None and job['id'] != job_id:
+                    continue
                 identity = employee_id(job['employee_id'])
                 if identity in blocked:
                     continue
@@ -122,13 +129,16 @@ class DesktopEnrollment:
                     atomic_write(self.directory / 'receipts' / (job['id'] + '.json'), json.dumps(receipt).encode('utf-8'))
                     path.unlink()
                     completed += 1
+                    jobs[job['id']] = 'completed'
                 except SyncConflict:
                     blocked.add(identity)
+                    jobs[job['id']] = 'conflict'
                     errors.append(f'NV {identity}: dữ liệu Web đã đổi; giữ batch xung đột, không ghi đè. Làm mới và kiểm tra batch.')
                 except Exception:
                     blocked.add(identity)
+                    jobs[job['id']] = 'saved' if job['db_saved'] else 'pending'
                     errors.append(f'NV {identity}: chưa hoàn tất DB/gallery; batch chờ được giữ để thử lại.')
-        return dict(completed=completed, pending=len(self.pending()), errors=errors)
+        return dict(completed=completed, pending=len(self.pending()), errors=errors, jobs=jobs)
 
     def refresh(self):
         return refresh_gallery(self.gallery_path)

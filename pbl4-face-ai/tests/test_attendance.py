@@ -64,6 +64,113 @@ class EngineTests(unittest.TestCase):
             self.clock.now = second
             self.engine.update(Frame())
 
+    def face_only_engine(self):
+        self.engine.close()
+        with patch.dict(sys.modules, {'src.predict_status': None}):
+            self.engine = UnifiedAttendanceEngine(self.temp.name, face_engine=object(), face_only=True,
+                analyzer=lambda frames: analysis(), transport=self.transport, clock=self.clock)
+        self.addCleanup(self.engine.close)
+
+    def camera_ai2_engine(self, label='Fatigue', valid=True):
+        self.engine.close()
+        self.engine = UnifiedAttendanceEngine(self.temp.name, face_engine=object(), camera_only=True,
+            status_predictor=Predictor(), analyzer=lambda frames: analysis(label,valid),
+            transport=self.transport, clock=self.clock)
+        self.addCleanup(self.engine.close)
+
+    def test_camera_ai2_classifies_without_fabricating_sensor_values(self):
+        self.camera_ai2_engine()
+        self.engine.start_session()
+        self.engine.done_session(80,98)
+        fake_cv2=types.SimpleNamespace(imwrite=lambda *args:False,imencode=lambda *args:(False,None))
+        with patch.dict(sys.modules,{'cv2':fake_cv2}):
+            self.capture()
+            self.await_state(SessionState.COMPLETED)
+        record=self.engine.last_completed_record
+        self.assertEqual(record['assessment_mode'],'face_ai2')
+        self.assertTrue(record['ai2_valid'])
+        self.assertEqual(record['ai2_face_status'],'Fatigue')
+        self.assertEqual(record['fusion_result']['final_status'],'Mệt mỏi (AI 2)')
+        self.assertEqual(self.transport.payloads[0]['TrangThai'],'Fatigue')
+        self.assertIsNone(self.transport.payloads[0]['NhipTim'])
+        self.assertIsNone(self.transport.payloads[0]['SpO2'])
+        self.assertIsNone(record['iot_metrics']['hr'])
+        self.assertFalse(self.engine.iot_done_received)
+
+    def test_camera_ai2_invalid_assessment_remains_unknown(self):
+        self.camera_ai2_engine('Unknown',False)
+        self.engine.start_session()
+        fake_cv2=types.SimpleNamespace(imwrite=lambda *args:False,imencode=lambda *args:(False,None))
+        with patch.dict(sys.modules,{'cv2':fake_cv2}):
+            self.capture()
+            self.await_state(SessionState.COMPLETED)
+        self.assertEqual(self.transport.payloads[0]['TrangThai'],'Unknown')
+        self.assertEqual(self.engine.last_completed_record['fusion_result']['final_status'],'Chưa phân tích được thể trạng')
+        self.assertNotEqual(self.engine.last_completed_record['fusion_result']['alert_level'],'GREEN')
+
+    def test_camera_ai2_normal_without_sensor_does_not_claim_complete_health(self):
+        self.camera_ai2_engine('Normal')
+        self.engine.start_session()
+        fake_cv2=types.SimpleNamespace(imwrite=lambda *args:False,imencode=lambda *args:(False,None))
+        with patch.dict(sys.modules,{'cv2':fake_cv2}):
+            self.capture()
+            self.await_state(SessionState.COMPLETED)
+        record=self.engine.last_completed_record
+        self.assertEqual(record['fusion_result']['final_status'],'Bình thường (AI 2)')
+        self.assertNotEqual(record['fusion_result']['alert_level'],'GREEN')
+
+    def test_face_only_skips_rf_and_sensor_data_and_sends_unknown(self):
+        self.face_only_engine()
+        self.engine.start_session()
+        self.engine.done_session(80, 98)
+        self.assertFalse(self.engine.iot_done_received)
+        fake_cv2 = types.SimpleNamespace(imwrite=lambda *a: False, imencode=lambda *a: (False, None))
+        with patch.dict(sys.modules, {'cv2': fake_cv2}):
+            self.capture()
+            self.await_state(SessionState.COMPLETED)
+        record = self.engine.last_completed_record
+        payload = self.transport.payloads[0]
+        self.assertEqual(payload['TrangThai'], 'Unknown')
+        self.assertIsNone(payload['NhipTim'])
+        self.assertIsNone(payload['SpO2'])
+        self.assertFalse(record['ai2_valid'])
+        self.assertEqual(record['assessment_mode'], 'face_only')
+        self.assertIsNone(record['iot_metrics']['hr'])
+        self.assertNotEqual(record['fusion_result']['alert_level'], 'GREEN')
+        self.assertEqual(record['attendance_action'], 'CHECK-IN')
+        self.assertIsNone(self.engine.status_predictor)
+
+    def test_face_only_cancel_before_finalization(self):
+        self.face_only_engine()
+        self.engine.start_session()
+        for second in (100.0, 100.31):
+            self.clock.now = second
+            self.engine.update(Frame())
+        self.engine.abort_session('USER_CANCEL')
+        self.assertEqual(self.engine.state, SessionState.ABORTED)
+        self.assertEqual(self.transport.payloads, [])
+
+    def test_face_only_snapshot_gap_aborts_without_writing(self):
+        self.face_only_engine()
+        self.engine.start_session()
+        for second in (100.0, 100.31, 101.0):
+            self.clock.now = second
+            self.engine.update(Frame())
+        self.assertEqual(self.engine.state, SessionState.ABORTED)
+        self.assertEqual(self.engine.abort_reason, 'SNAPSHOT_GAP_EXCEEDED')
+        self.assertEqual(self.transport.payloads, [])
+
+    def test_face_only_unrecognized_identity_never_sends_event(self):
+        self.face_only_engine()
+        self.engine._analyzer = lambda frames: dict(analysis(), identity={'match': False})
+        self.engine.start_session()
+        fake_cv2 = types.SimpleNamespace(imwrite=lambda *a: False, imencode=lambda *a: (False, None))
+        with patch.dict(sys.modules, {'cv2': fake_cv2}):
+            self.capture()
+            self.await_state(SessionState.COMPLETED)
+        self.assertEqual(self.transport.payloads, [])
+        self.assertEqual(self.engine.last_completed_record['attendance_action'], 'NOT_RECORDED')
+
     def await_state(self, state):
         deadline = time.monotonic() + 3
         while self.engine.state != state and time.monotonic() < deadline:

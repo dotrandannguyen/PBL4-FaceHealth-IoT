@@ -103,13 +103,17 @@ class FramePump:
                 camera.release()
 
     def snapshot(self, max_age=.75):
+        frame, faces, _ = self.snapshot_with_timestamp(max_age)
+        return frame, faces
+
+    def snapshot_with_timestamp(self, max_age=.75):
         if self.stop.is_set():
-            return None, []
+            return None, [], None
         with self.lock:
             value = self.latest
         if value is None or time.monotonic() - value[2] > max_age:
-            return None, []
-        return value[0], value[1]
+            return None, [], None
+        return value
 
     def close(self):
         self.stop.set()

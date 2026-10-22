@@ -50,7 +50,11 @@ class UnifiedAttendanceEngine:
     IOT_TIMEOUT_SEC = 3.5
 
     def __init__(self, logs_dir=None, face_threshold=0.45, *, face_engine=None,
-                 status_predictor=None, analyzer=None, transport=None, clock=None):
+                 status_predictor=None, analyzer=None, transport=None, clock=None, face_only=False, camera_only=False):
+        if type(face_only) is not bool or type(camera_only) is not bool or (face_only and camera_only):
+            raise ValueError('Choose either face_only or camera_only using boolean flags')
+        self.face_only = face_only
+        self.camera_only = camera_only
         if not math.isfinite(face_threshold) or not 0 < face_threshold <= 1:
             raise ValueError("Face threshold must be in (0, 1]")
         self.logs_dir = Path(logs_dir) if logs_dir is not None else CURRENT_DIR / "logs"
@@ -62,12 +66,12 @@ class UnifiedAttendanceEngine:
         if face_engine is None:
             from src.face_engine import FaceEngine
             face_engine = FaceEngine(model_name="buffalo_sc")
-        if status_predictor is None:
+        if status_predictor is None and not face_only:
             from src.predict_status import StatusPredictor
             status_predictor = StatusPredictor(smoothing_window=5, max_yaw_deg=25.0)
         self.face_engine = face_engine
         self.face_threshold = face_threshold
-        self.status_predictor = status_predictor
+        self.status_predictor = None if face_only else status_predictor
         self._analyzer = analyzer or self._analyze_snapshots
         self._clock = clock or time.monotonic
         self._lock = threading.RLock()
@@ -107,7 +111,7 @@ class UnifiedAttendanceEngine:
         self.identity_matched = False
         self.iot_hr = self.iot_spo2 = self.iot_ir_avg = 0
         self.abort_reason = ""
-        self.latest_face_metrics = dict(ear=0.0, mar=0.0, pitch=0.0, yaw=0.0, sharpness=0.0)
+        self.latest_face_metrics = dict(ear=0.0, mar=0.0, pitch=0.0, yaw=0.0, roll=0.0, sharpness=0.0)
 
     def start_session(self, ir=0):
         with self._lock:
@@ -118,7 +122,8 @@ class UnifiedAttendanceEngine:
             if isinstance(ir, bool) or not isinstance(ir, (int, float)) or not math.isfinite(ir) or ir < 0:
                 return None
             self._clear_session()
-            self.status_predictor.reset()
+            if self.status_predictor is not None:
+                self.status_predictor.reset()
             self.session_id = str(uuid4())
             self.occurred_at = datetime.now(timezone(timedelta(hours=7))).isoformat(timespec="milliseconds")
             self.state = SessionState.CAPTURING
@@ -138,6 +143,8 @@ class UnifiedAttendanceEngine:
     def done_session(self, hr, spo2, ir_avg=0, session_id=None):
         """Record an event only. The preview loop owns completion transitions."""
         with self._lock:
+            if self.face_only or self.camera_only:
+                return None
             if session_id is not None and session_id != self.session_id:
                 return None
             if self.state not in (SessionState.CAPTURING, SessionState.PROCESSING) or self.iot_done_received:
@@ -166,7 +173,8 @@ class UnifiedAttendanceEngine:
                 if now - self.session_start_time >= self.HARD_TIMEOUT_SEC:
                     self.abort_session("HARD_TIMEOUT_EXCEEDED")
             if self.state in (SessionState.COMPLETED, SessionState.ABORTED):
-                duration = self.COMPLETED_DISPLAY_SEC if self.state == SessionState.COMPLETED else self.ABORTED_DISPLAY_SEC
+                duration = (self.COMPLETED_DISPLAY_SEC if self.state == SessionState.COMPLETED or self.camera_only
+                            else self.ABORTED_DISPLAY_SEC)
                 if now - self.state_enter_time >= duration and (self._future is None or self._future.done()):
                     self.state = SessionState.IDLE
                     self.state_enter_time = now
@@ -192,7 +200,7 @@ class UnifiedAttendanceEngine:
                     except Exception:
                         self.abort_session("AI_PROCESSING_FAILED")
                 if self.state == SessionState.PROCESSING and self.ai_processed:
-                    if self.iot_done_received or now - self.session_start_time >= self.IOT_TIMEOUT_SEC:
+                    if self.face_only or self.camera_only or self.iot_done_received or now - self.session_start_time >= self.IOT_TIMEOUT_SEC:
                         self.state = SessionState.FINALIZING
                         self.state_enter_time = now
                         self._future = self._pool.submit(self._finalize_session)
@@ -230,11 +238,13 @@ class UnifiedAttendanceEngine:
             return False
 
     def _info(self, now):
-        return {"state": self.state, "elapsed_in_state": now - self.state_enter_time,
+        return {"state": self.state, "face_only": self.face_only, "camera_only": self.camera_only, "elapsed_in_state": now - self.state_enter_time,
                 "elapsed_in_session": now - self.session_start_time if self.state != SessionState.IDLE else 0.0,
                 "session_id": self.session_id, "captured_count": len(self.captured_frames),
                 "captured_frames": list(self.captured_frames), "flash_timer": self.flash_timer,
-                "ai2_result": {"status": self.session_status_history[0], "is_valid": self.ai2_valid} if self.session_status_history else None,
+                "ai2_result": {"status": self.session_status_history[0], "is_valid": self.ai2_valid,
+                               "confidence": self.ai2_confidence, "message": self.ai2_message,
+                               "metrics": dict(self.latest_face_metrics)} if self.session_status_history else None,
                 "face_bbox": self.face_bbox, "sharpness": max(0.0, self.best_frame_score),
                 "identified_id": self.identified_id, "identified_name": self.identified_name,
                 "identity_sim": self.identity_sim,
@@ -258,7 +268,9 @@ class UnifiedAttendanceEngine:
         except Exception:
             identity = {"match": False}
         try:
-            status = self.status_predictor.predict_status_detailed(frames)
+            status = ({"status": "Unknown", "is_valid": False,
+                       "message": "Chấm công khuôn mặt; chưa đánh giá thể trạng hoặc đo sinh trắc."}
+                      if self.face_only else self.status_predictor.predict_status_detailed(frames))
         except Exception:
             status = {"status": "Unknown", "is_valid": False, "message": "AI 2 không phân tích được"}
         return {"scores": scores, "best": best, "identity": identity, "status": status}
@@ -278,7 +290,9 @@ class UnifiedAttendanceEngine:
         self.identity_matched = bool(identity.get("match")) and self.face_threshold <= self.identity_sim <= 1.000001
         self.identified_id = identity.get("student_id") if self.identity_matched else None
         self.identified_name = identity.get("name", "Chưa xác định") if self.identity_matched else "Chưa xác định"
-        status = result["status"]
+        status = ({"status": "Unknown", "is_valid": False,
+                   "message": "Chấm công khuôn mặt; chưa đánh giá thể trạng hoặc đo sinh trắc."}
+                  if self.face_only else result["status"])
         label = status.get("status", "Unknown")
         self.ai2_valid = bool(status.get("is_valid")) and label in ("Normal", "Fatigue", "Exhausted")
         self.ai2_confidence = float(status.get("confidence", 0.0)) if self.ai2_valid else 0.0
@@ -287,8 +301,11 @@ class UnifiedAttendanceEngine:
             self.ai2_confidence = 0.0
         self.ai2_message = status.get("message", "")
         self.session_status_history = [label if self.ai2_valid else "Unknown"]
-        for key in ("ear", "mar", "pitch", "yaw"):
-            value = float(status.get("metrics", {}).get(key, 0.0))
+        for key in ("ear", "mar", "pitch", "yaw", "roll"):
+            try:
+                value = float(status.get("metrics", {}).get(key, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
             self.latest_face_metrics[key] = value if math.isfinite(value) else 0.0
         self.latest_face_metrics["sharpness"] = self.best_frame_score
         self.ai_processed = True
@@ -332,15 +349,25 @@ class UnifiedAttendanceEngine:
             bio_level = "Bio_Normal"
 
         # 4. Ma trận Hợp nhất Quyết định (Late Fusion Decision Matrix)
-        if bio_level == "Bio_Danger":
+        if self.face_only:
+            final_status = "Chỉ nhận diện khuôn mặt"
+            alert_level = "YELLOW"
+            recommendation = "AI 2 đang tắt trong phiên này."
+
+        elif bio_level == "Bio_Danger":
             final_status = "Cảnh báo y tế"
             alert_level = "RED"
             recommendation = "Chỉ số tim mạch hoặc SpO2 bất thường. Cần nghỉ ngơi kiểm tra y tế ngay!"
 
-        elif not self.ai2_valid or bio_level == "Bio_Missing":
-            final_status = "Chưa đủ dữ liệu đánh giá"
+        elif not self.ai2_valid:
+            final_status = "Chưa phân tích được thể trạng"
             alert_level = "YELLOW"
-            recommendation = self.ai2_message or "Cần đo lại dữ liệu khuôn mặt và sinh trắc."
+            recommendation = self.ai2_message or "Cần đủ ba ảnh mặt hợp lệ để AI 2 phân tích."
+
+        elif bio_level == "Bio_Missing":
+            final_status = {'Normal': 'Bình thường', 'Fatigue': 'Mệt mỏi', 'Exhausted': 'Kiệt sức'}[ai2_final_status] + ' (AI 2)'
+            alert_level = {'Normal': 'YELLOW', 'Fatigue': 'ORANGE', 'Exhausted': 'RED'}[ai2_final_status]
+            recommendation = "Kết quả AI 2; chưa đo nhịp tim/SpO2."
 
         elif ai2_final_status == "Exhausted":
             final_status = "Kiệt sức / Buồn ngủ nặng"
@@ -413,6 +440,7 @@ class UnifiedAttendanceEngine:
 
         # 6. Tạo gói JSON Output chuẩn
         record: Dict[str, Any] = {
+            "assessment_mode": "face_only" if self.face_only else ("face_ai2" if self.camera_only else "full"),
             "timestamp": now_str,
             "event_id": self.session_id,
             "ai2_valid": self.ai2_valid,
@@ -431,8 +459,8 @@ class UnifiedAttendanceEngine:
                 "sharpness": round(self.latest_face_metrics["sharpness"], 1),
             },
             "iot_metrics": {
-                "hr": hr,
-                "spo2": spo2,
+                "hr": None if self.face_only or self.camera_only else hr,
+                "spo2": None if self.face_only or self.camera_only else spo2,
                 "bio_level": bio_level,
                 "ir_avg": self.iot_ir_avg,
             },
@@ -497,4 +525,5 @@ class UnifiedAttendanceEngine:
         # Do not cancel an already submitted finalization when the user quits.
         self._pool.shutdown(wait=True, cancel_futures=False)
         self._retry_pool.shutdown(wait=True, cancel_futures=False)
-        self.status_predictor.close()
+        if self.status_predictor is not None:
+            self.status_predictor.close()

@@ -1,4 +1,4 @@
-# Chạy PBL4 trên Windows — cập nhật 20/10/2026
+# Chạy PBL4 trên Windows — cập nhật 22/10/2026
 
 Từ thư mục gốc `PBL4`. Web dùng PHP 8.2/MariaDB 10.11 trong Docker; AI dùng Python 3.12 x64 trên Windows. Webcam laptop/USB index 0, backend DirectShow đã đọc được JPEG 640×480; PHP trong container cũng đã nhận ảnh qua AI.
 
@@ -17,6 +17,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/stop_services.ps1
 Script dừng kiểm tra PID, thời điểm khởi động và đường dẫn Python; không dừng container Web/DB.
 
 **Trạng thái thực tế:** nhận diện InsightFace và MediaPipe đã chạy trên ảnh có sẵn; webcam và relay PHP đã kiểm tra thật. Chấm công HTTP và enrollment đã qua kiểm thử trên DB tạm. Chưa nghiệm thu một phiên chấm công người thật đầy đủ với model RF v2 và cảm biến thật. Không đánh đồng các kiểm tra này với độ chính xác nhận diện hoặc trạng thái sức khỏe.
+
+## Giao diện đăng ký, Test trạng thái và chấm công
+
+Nhấp đúp `MO_GUI_PBL4.cmd` tại gốc để mở dashboard. Ba nút camera mở các cửa sổ Tkinter riêng. Khi chuyển module từ dashboard, cửa sổ cũ được yêu cầu đóng, hoàn tất thao tác lưu đang chạy và giải phóng camera trước khi cửa sổ mới khởi động. Sau khi cập nhật code, đóng/mở lại dashboard đang chạy.
+
+- **Đăng ký** (`gui_register.py`): chọn hồ sơ nhân viên đã có; ID và họ tên hiển thị riêng theo hồ sơ chính thức. Khung oval đỏ/xanh kiểm tra đúng một mặt, vị trí, khoảng cách, ánh sáng, độ nét và hướng mặt. Chụp tự động hoặc Space cho năm hướng; thanh tiến trình, bộ đếm và thumbnail hiển thị từng mẫu. Sau mẫu thứ năm, kiểm tra ảnh rồi bấm **Lưu / Trích xuất Embedding**. Chỉ bật Lưu khi đủ thông tin và năm mẫu. Đăng ký chờ đồng bộ được phục hồi từ outbox cũ; không tự ghi đè batch xung đột. Chuyển module bỏ mẫu chưa bấm Lưu; batch đã lưu trong outbox vẫn được giữ.
+- **Test trạng thái** (`TEST_AI2.cmd` hoặc `gui_status.py`): hiện landmarks/bounding box, nhãn, xác suất RF, EAR/MAR/Pitch/Yaw/Roll và tiến trình ba quan sát. Dừng sẽ giải phóng camera; Bắt đầu / Thử lại mở lại pipeline. Nhãn RF vẫn là Normal/Fatigue/Exhausted. Mất tập trung/quay đầu là quy tắc vượt ngưỡng góc đầu, hiển thị rõ nguồn và không gán xác suất RF giả.
+- **Chấm công** (`CHAM_CONG_AI2.cmd`, `THU_CHECKIN_KHUON_MAT.cmd` hoặc `gui_attendance.py`): màn hình chỉ có video camera và hướng dẫn Space. Mỗi lần nhấn rồi thả **Space** tạo một lần quét nhận diện và trạng thái; giữ phím hoặc bấm khi đang xử lý không tạo lượt tiếp theo. Kết quả báo **CHECK-IN**, **CHECK-OUT**, hoặc **Đã check-out hôm nay** trong 5 giây, sau đó tự trở lại video camera. Mỗi nhân viên chỉ có một check-in và một check-out mỗi ngày theo giờ Việt Nam; quét thêm sau khi check-out không tạo check-in mới. ESC đóng cửa sổ.
+
+Chấm công dùng nguyên `UnifiedAttendanceEngine`, gallery/embedding, model loader, JSONL và outbox/HTTP hiện có; không đổi schema hoặc train lại model. Nhịp tim/SpO₂ chưa đo vẫn là null. Camera tiếp tục lấy ảnh ở worker khi inference hoặc HTTP chậm. AI chỉ chạy cho lượt quét được yêu cầu bằng Space; lúc chờ chỉ hiển thị video. Mỗi lượt vẫn dùng ba ảnh cùng một người theo contract model hiện có. Quy tắc vào/ra do backend quyết định trong transaction, không dựa vào việc mở lại cửa sổ camera.
+
+`THU_CHECKIN_KHUON_MAT.cmd` và helper check-in mặc định cũng mở cả hai AI để tránh vào nhầm chế độ cũ. CLI `--face-only` chỉ còn dùng khi chủ động kiểm tra riêng nhận diện mặt. Demo không có hai flag trên là nhánh IoT/Serial/giả lập cũ; không dùng nhánh giả lập để xác nhận cảm biến thật.
+
+**Camera:** AI service chỉ mở webcam khi nhận yêu cầu lấy hình, tự nhả khoảng 3 giây sau frame cuối. Đóng cửa sổ camera hoặc rời/ẩn trang đăng ký sẽ ngừng lấy hình; dashboard chỉ kiểm tra health nên không giữ webcam. `/health` có `camera_open` để kiểm tra mà không mở camera. Đọc frame lỗi thì nhả thiết bị ngay. Nếu dùng Web đang mở từ bản cũ, tải lại trang để nhận JavaScript mới.
+
+Các file CMD do người dùng mở từ desktop sẽ hiện cửa sổ trên phiên Windows của người dùng. Helper `tools/FaceCheckinLauncher.cs` có thể build vào `.pbl4-run`: define `DASHBOARD` mở GUI cũ, `STATUS_TEST` mở test riêng, `ATTENDANCE_AI2` mở chấm công chung; binary/log ignore Git. Không chạy lệnh qua UI terminal.
 
 ## Cài môi trường trên máy mới
 
@@ -82,9 +98,13 @@ Trong `pbl4-face-ai`, dùng Python của venv:
 
 Thay `2` bằng mã hồ sơ thực trên Web. Đăng ký yêu cầu năm pose cùng một người. Khi DB/refresh lỗi, batch giữ trong `data/enrollment-outbox`; retry tiếp tục batch cũ, không tạo hồ sơ hoặc ghi đè phiên bản mới hơn. Batch xung đột phải xem và xác nhận lưu trữ qua GUI. Gallery chỉ phát hành dữ liệu DB đã xác nhận. Gallery hiện đã refresh từ Web: 3 hồ sơ, 14 mẫu; mẫu cũ thiếu hướng vẫn cần đăng ký lại khi sử dụng.
 
+## Mở Test Trạng thái
+
+Sau khi có model v2 tương thích, bấm **Xem thể trạng trực tiếp** trong dashboard hoặc nhấp đúp `TEST_AI2.cmd`. Cửa sổ tên **PBL4 · Test trạng thái khuôn mặt**; ESC hoặc X để thoát. Khi camera tạm chưa có frame, cửa sổ hiện kết nối lại trong tối đa 10 giây; lỗi model/camera hiện trên giao diện và có nút Thử lại. Log các cửa sổ do dashboard mở nằm trong `.pbl4-run/desktop/`. CLI `src/predict_status.py` vẫn giữ preview OpenCV cho công cụ cũ. Test không tự tạo chấm công hoặc sửa model/dataset.
+
 ## Thu dữ liệu RF v2 — bước cần người tham gia
 
-Model `data/rf_status_model.pkl` hiện là legacy; loader v2 từ chối để tránh dùng sai feature. Giữ nguyên model/dataset cũ, không tự thêm metadata hoặc train bằng dữ liệu giả rồi triển khai.
+Model `data/rf_status_model.pkl` đã được người dùng train thành artifact v2 tương thích và đã chạy AI 2 trong phiên quét thật cùng AI 1. Các lệnh dưới dùng cho lần thu bổ sung/train lại. Dataset legacy `status_dataset.csv` được giữ riêng; không gán metadata giả hoặc dùng dữ liệu tổng hợp để thay dữ liệu người thật.
 
 Tại `pbl4-face-ai`:
 
@@ -96,6 +116,10 @@ Tại `pbl4-face-ai`:
 ```
 
 Trong cửa sổ collector: chọn nhãn bằng 1/2/3, giữ mặt chính diện đủ một chuỗi ba quan sát cách nhau 300–600 ms; nhấn lại để thu chuỗi tiếp theo; Q thoát. Nhãn do người vận hành ghi nhận. Cần ít nhất hai người, 18 chuỗi và đủ ba nhãn ở cả nhóm train/test; nên thu nhiều hơn mức tối thiểu cho mỗi người/nhãn. Chỉ thu khi người tham gia và người gán nhãn sẵn sàng, không tự suy nhãn từ chỉ số mắt. Nếu chưa đủ nhóm, trainer từ chối và giữ artifact cũ.
+
+Nếu GUI báo chưa có mẫu mới, đợi cửa sổ `Status dataset v2`, nhấn 1/2/3 rồi giữ mặt chính diện tới khi `saved` tăng trước khi Q. Mất frame tạm sẽ thử lại tối đa 10 giây; mặt không hợp lệ hoặc khoảng ảnh quá dài hủy chuỗi dở và hiện hướng dẫn nhấn lại nhãn. Không tính chuỗi bị hủy thành một dòng CSV.
+
+Lỗi thu và thoát không có mẫu được báo riêng. Log stdout/stderr từng lần nằm trong `.pbl4-run/training/`; popup chỉ rõ file log và lý do lỗi. Sau cập nhật source, đóng/mở lại dashboard để nạp phần thông báo mới. Thu/train thất bại vẫn giữ dữ liệu/model đã lưu.
 
 Sau khi có artifact tương thích, có thể chạy `demo_unified_iot.py`; phím 1/2/3 ở demo tạo chỉ số IoT giả lập và có thể gửi sự kiện chấm công thật vào Web. Không dùng demo để kết luận cảm biến đã được kiểm chứng. Serial thật cần firmware producer đúng giao thức; repo chưa có nghiệm thu MAX30102 toàn luồng.
 

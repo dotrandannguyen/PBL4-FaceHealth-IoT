@@ -16,8 +16,11 @@ if sys.platform == "win32":
 
 import cv2
 import numpy as np
+try:
+    from insightface.app import FaceAnalysis
+except (ImportError, ModuleNotFoundError):
+    FaceAnalysis = None
 from pathlib import Path
-from insightface.app import FaceAnalysis
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -45,6 +48,8 @@ class FaceEngine:
         ctx_id: int = DEFAULT_CTX_ID,
         det_size: tuple = DEFAULT_DET_SIZE,
     ):
+        if FaceAnalysis is None:
+            raise RuntimeError("Thư viện insightface chưa được cài đặt. Vui lòng cài đặt insightface để sử dụng FaceEngine.")
         console.print(f"[bold cyan]🚀 Đang khởi tạo InsightFace ({model_name})...[/]")
         self.app = FaceAnalysis(
             name=model_name,

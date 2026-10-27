@@ -47,6 +47,7 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from unified_engine import UnifiedAttendanceEngine, SessionState
+from src.camera_source import CameraSource
 
 # Bảng màu HUD BGR (OpenCV)
 COLORS = {
@@ -211,7 +212,7 @@ def start_serial_listener(engine: UnifiedAttendanceEngine, port: str, baud: int 
     return stop, thread
 
 
-def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
+def draw_hud(frame: np.ndarray, info: dict, fps: float, cam_tag: str = "Webcam") -> np.ndarray:
     """Vẽ toàn bộ HUD thông tin, bounding box và overlay kết quả bằng tiếng Việt sắc nét."""
     vis = frame.copy()
     h, w = vis.shape[:2]
@@ -467,6 +468,8 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
     # 5.1 Vẽ chữ Top Banner
     draw.text((20, 14), state_text, font=HUD_FONTS["banner_title"], fill=state_rgb)
     draw.text((20, 42), sub_text, font=HUD_FONTS["banner_sub"], fill=RGB_COLORS["LIGHT_GRAY"])
+    if cam_tag:
+        draw.text((w - 240, 16), cam_tag, font=HUD_FONTS["body_bold"], fill=RGB_COLORS["CYAN"])
 
     # 5.2 Vẽ chữ Bounding Box
     if bbox_info is not None:
@@ -578,10 +581,11 @@ def draw_hud(frame: np.ndarray, info: dict, fps: float) -> np.ndarray:
 # -------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Demo Unified Attendance Engine (Face AI + IoT MAX30102)")
-    parser.add_argument("--camera", type=int, default=0, help="Camera index (mặc định: 0)")
+    parser.add_argument("--camera", type=str, default="0", help="Camera index ('0', '1') hoặc 'esp32'")
     parser.add_argument("--serial-port", type=str, default=None, help="Cổng Serial ESP32 (ví dụ: COM3 hoặc /dev/ttyUSB0)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate Serial (mặc định: 115200)")
     parser.add_argument("--threshold", type=float, default=0.45, help="Ngưỡng nhận diện khuôn mặt (mặc định: 0.45)")
+    parser.add_argument("--no-auto-trigger", action="store_true", help="Tắt tự động kích hoạt khi thấy mặt trên ESP32")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--face-only', action='store_true', help='Chỉ chấm công khuôn mặt; không RF hoặc số đo IoT giả')
     mode.add_argument('--camera-only', action='store_true', help='Nhận diện + AI 2 qua webcam, không giả lập nhịp tim/SpO2')
@@ -605,7 +609,7 @@ def main():
 
     cap = open_camera(args.camera)
     if not cap.isOpened():
-        print(f"[Demo] ❌ Không mở được camera index {args.camera}!")
+        print(f"[Demo] ❌ Không mở được camera: {args.camera}!")
         if serial_listener is not None:
             serial_listener[0].set()
             serial_listener[1].join(timeout=1.0)
@@ -613,10 +617,13 @@ def main():
         engine.close()
         return
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    is_esp32 = getattr(cap, "is_esp32", False)
+    cam_tag = "📡 ESP32-CAM (Node 1)" if is_esp32 else f"📷 Webcam {args.camera}"
 
-    print("\n[Demo] 🎮 HƯỚNG DẪN ĐIỀU KHIỂN:")
+    print(f"\n[Demo] 📹 Nguồn Camera: {cam_tag}")
+    print("[Demo] 🎮 HƯỚNG DẪN ĐIỀU KHIỂN:")
+    if is_esp32:
+        print("  💡 ESP32-CAM Mode: Đứng trước camera, hệ thống sẽ TỰ ĐỘNG điểm danh khi nhận ảnh!")
     if args.face_only:
         print('  [SPACE] / [1]    : Chấm công khuôn mặt; thể trạng Chưa đánh giá, không đo nhịp tim/SpO2')
         print('  Phiên mới có thể ghi vào/ra thật trên Web. Chỉ nhấn một lần khi đã sẵn sàng.')
@@ -634,22 +641,17 @@ def main():
 
     prev_time = time.time()
     fps = 30.0
+    face_hold_count = 0
     finished_at = None
-    window_title = 'PBL4 - CHAM CONG KHUON MAT' if args.face_only else ('PBL4 - CHAM CONG + AI 2' if args.camera_only else 'PBL4 - Unified AI + IoT')
+    window_title = f"PBL4 - He Thong Diem Danh Thong Minh [{cam_tag}]"
     cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_title, 960, 720)
 
     try:
         while True:
             ret, frame = cap.read()
-            if not ret:
-                engine.abort_session('CAMERA_FRAME_UNAVAILABLE')
-                engine.update(None)
-                waiting = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(waiting, 'Dang ket noi camera... Q de thoat', (15, 60), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 220, 255), 2)
-                cv2.imshow(window_title, waiting)
-                if cv2.waitKey(100) & 0xff == ord('q') or cv2.getWindowProperty(window_title, cv2.WND_PROP_VISIBLE) < 1:
-                    break
+            if not ret or frame is None:
+                time.sleep(0.02)
                 continue
 
             curr_time = time.time()
@@ -663,9 +665,19 @@ def main():
                 result = (info.get('completed_record') or {}).get('web_result', {})
                 print('[Attendance] action=' + str(result.get('action')) + ' status=' + str(result.get('status')))
 
+            # Tự động kích hoạt Điểm danh khi phát hiện khuôn mặt ổn định
+            if not args.no_auto_trigger and engine.state == SessionState.IDLE:
+                if info.get("face_bbox") is not None:
+                    face_hold_count += 1
+                    if face_hold_count >= 5:  # ~0.25s giữ mặt ổn định
+                        print("[Demo] 🎯 Đã phát hiện khuôn mặt ổn định -> TỰ ĐỘNG CHỤP & TIẾN HÀNH ĐIỂM DANH!")
+                        mock_iot.trigger_normal()
+                        face_hold_count = 0
+                else:
+                    face_hold_count = 0
+
             # Vẽ HUD
-            display_frame = cv2.resize(frame, (960, 720)) if args.face_only or args.camera_only else frame
-            vis = draw_hud(display_frame, info, fps)
+            vis = draw_hud(frame, info, fps, cam_tag=cam_tag)
 
             cv2.imshow(window_title, vis)
             key = cv2.waitKey(1) & 0xFF
@@ -708,6 +720,7 @@ def main():
         cap.release()
         cv2.destroyAllWindows()
         print("[Demo] Đã giải phóng Camera và tắt luồng nền thành công.")
+
 
 
 if __name__ == "__main__":

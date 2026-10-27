@@ -31,6 +31,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from src.face_engine import FaceEngine
+from src.camera_source import CameraSource, open_camera, FramePump
 from src.registration_capture import assess_frame, render_guide, capture_sample
 
 logger = logging.getLogger(__name__)
@@ -52,15 +53,19 @@ FONT_TITLE = ('Segoe UI', 14, 'bold'); FONT_SMALL = ('Segoe UI', 9)
 
 
 class RegisterApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, camera_source="0", init_id="", init_name=""):
         super().__init__()
-        self.title('PBL4 - Đăng ký khuôn mặt nhân viên')
-        self.geometry('1180x760')
-        self.minsize(1000, 700)
+        self.camera_source = camera_source
+        self.init_id = init_id
+        self.init_name = init_name
+        source_label = "ESP32-CAM (WiFi Node 1)" if str(camera_source).lower() == "esp32" else "Webcam Máy Tính"
+        self.title(f'PBL4 - Đăng ký khuôn mặt [{source_label}]')
+        self.geometry('1200x750')
+        self.minsize(1000, 650)
         self.configure(bg=DARK_BG)
         self.engine: Optional[FaceEngine] = None
         self.engine_loading: bool = True
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.cap: Optional[CameraSource] = None
         self.running: bool = True
         self.current_step: int = 0
         self.embeddings_collected: List[np.ndarray] = []
@@ -97,6 +102,7 @@ class RegisterApp(tk.Tk):
         self._load_employees()
         from src.desktop_lifecycle import install_close_listener
         install_close_listener(self, lambda: self.on_close(from_dashboard=True))
+
 
     def _build_ui(self):
         hdr = tk.Frame(self, bg=PANEL_BG, height=56)
@@ -166,8 +172,8 @@ class RegisterApp(tk.Tk):
         card.pack(fill='x', pady=(0, 8))
         tk.Label(card, text='1. Chọn nhân viên', font=FONT_BOLD,
                  bg=CARD_BG, fg=ACCENT2).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
-        self.id_var = tk.StringVar()
-        self.name_var = tk.StringVar()
+        self.id_var = tk.StringVar(value=self.init_id)
+        self.name_var = tk.StringVar(value=self.init_name)
         self.employee_var = tk.StringVar()
         self.employee_combo = ttk.Combobox(card, textvariable=self.employee_var,
                                           state='readonly', font=FONT_MAIN, width=30)
@@ -175,11 +181,11 @@ class RegisterApp(tk.Tk):
         self.employee_combo.bind('<<ComboboxSelected>>', self._select_employee)
         tk.Label(card, text='ID / Mã số', bg=CARD_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
             row=2, column=0, sticky='w', pady=(8, 2))
-        ttk.Entry(card, textvariable=self.id_var, state='readonly', font=FONT_MAIN, width=11).grid(
+        ttk.Entry(card, textvariable=self.id_var, font=FONT_MAIN, width=11).grid(
             row=3, column=0, sticky='ew', padx=(0, 8))
         tk.Label(card, text='Họ và tên', bg=CARD_BG, fg=TEXT_DIM, font=FONT_SMALL).grid(
             row=2, column=1, sticky='w', pady=(8, 2))
-        ttk.Entry(card, textvariable=self.name_var, state='readonly', font=FONT_MAIN, width=24).grid(
+        ttk.Entry(card, textvariable=self.name_var, font=FONT_MAIN, width=24).grid(
             row=3, column=1, sticky='ew')
         self.employee_note = tk.StringVar(value='Đang tải nhân viên từ hệ thống…')
         tk.Label(card, textvariable=self.employee_note, font=FONT_SMALL, bg=CARD_BG,
@@ -257,16 +263,18 @@ class RegisterApp(tk.Tk):
         def loaded(engine):
             self.engine = engine
             self.engine_loading = False
+            self.status_var.set('InsightFace buffalo_sc sẵn sàng!')
             self._update_controls()
         def failed(error):
             self.engine_loading = False
             self.status_var.set('Không tải được InsightFace. Kiểm tra môi trường/model.')
+            self._update_controls()
         self.btn_start.configure(state='disabled')
         self.io.submit(lambda: FaceEngine(model_name='buffalo_sc'), loaded, failed)
 
     def _open_webcam(self):
-        from src.camera_source import FramePump
-        self.pump = FramePump(lambda: open_camera(0), lambda: self.engine)
+        from src.camera_source import FramePump, open_camera
+        self.pump = FramePump(lambda: open_camera(self.camera_source), lambda: self.engine)
 
     def _poll_frame(self):
         if not self.running:
@@ -331,6 +339,7 @@ class RegisterApp(tk.Tk):
                      f'Collected: {self.current_step}/5 | Face registration')
         return render_guide(frame, faces, readiness, step_text,
                             min(self.ready_timer / READY_FRAMES, 1.))
+
 
     def _show_frame(self, frame):
         cw, ch = self.cam_canvas.winfo_width(), self.cam_canvas.winfo_height()
@@ -775,6 +784,14 @@ class RegisterApp(tk.Tk):
 
 
 if __name__ == '__main__':
-    app = RegisterApp()
+    import argparse
+    parser = argparse.ArgumentParser(description="PBL4 Face Registration")
+    parser.add_argument("--camera", type=str, default="0", help="Camera source ('0', '1', hoac 'esp32')")
+    parser.add_argument("--id", type=str, default="", help="Student ID ban dau")
+    parser.add_argument("--name", type=str, default="", help="Ten sinh vien ban dau")
+    args = parser.parse_args()
+
+    app = RegisterApp(camera_source=args.camera, init_id=args.id, init_name=args.name)
     app.protocol('WM_DELETE_WINDOW', app.on_close)
     app.mainloop()
+

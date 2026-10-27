@@ -1,8 +1,8 @@
 """
-ai_web_service.py — AI REST Service phục vụ Web Quản lý & Đăng ký khuôn mặt (PBL4)
+ai_web_service.py - AI REST Service phục vụ Web Quản lý & Đăng ký khuôn mặt (PBL4)
 Cung cấp các API:
   - GET  /health                      : Kiểm tra trạng thái AI service
-  - GET  /internal/camera/frame       : Chụp và trả về frame JPEG từ webcam
+  - GET  /internal/camera/frame       : Chụp và trả về frame JPEG từ Camera (ESP32-CAM hoặc Webcam)
   - POST /api/ai/enrollment/inspect   : Kiểm tra pose và chất lượng ảnh enrollment
   - POST /api/ai/enrollment/capture   : Trích xuất embedding 512-dim (2048 bytes raw) và JPEG
   - POST /api/ai/gallery/refresh      : Đồng bộ gallery khuôn mặt từ CSDL Web về file embeddings.pkl
@@ -23,29 +23,25 @@ import atexit
 import io
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple, Dict, Any
 
-# Chặn log rác C++ từ TensorFlow / MediaPipe / GLOG
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["GLOG_minloglevel"] = "3"
-
+from flask import Flask, request, jsonify, Response
+from werkzeug.exceptions import RequestEntityTooLarge
 import cv2
 import numpy as np
 import requests
-from flask import Flask, request, jsonify, Response
-from werkzeug.exceptions import RequestEntityTooLarge
 
-# Thêm đường dẫn project
+# Đảm bảo đường dẫn import
 BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / "src"
-DATA_DIR = BASE_DIR / "data"
-EMBEDDINGS_PATH = DATA_DIR / "embeddings.pkl"
-
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from src.face_engine import FaceEngine
+from src.verify import load_db
+from src.camera_source import CameraSource
 from src.enrollment_pose import estimate_pose, check_pose_match
 from src.gallery_store import replace_from_loader
 from src.gallery_payload import build_gallery
@@ -55,21 +51,22 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 # Cấu hình Web Backend
 WEB_GALLERY_URL = os.environ.get("WEB_GALLERY_URL", "http://localhost:8080/?action=internal_face_gallery")
+EMBEDDINGS_PATH = BASE_DIR / "data" / "embeddings.pkl"
 PORT = int(os.environ.get("AI_PORT", 5001))
 
-# Singleton FaceEngine & Camera
+# Quản lý Singleton Engine & Camera
 _engine: Optional[FaceEngine] = None
 _engine_lock = threading.Lock()
 
-_cap: Optional[cv2.VideoCapture] = None
+_cap: Optional[CameraSource] = None
 _camera_lock = threading.RLock()
 _camera_last_used = 0.0
 _camera_idle_timer = None
 CAMERA_IDLE_SECONDS = 3.0
 
 
-def _arm_camera_idle_timer(delay=CAMERA_IDLE_SECONDS):
-    # Caller holds _camera_lock. One timer per idle interval, not per frame.
+def _arm_camera_idle_timer(delay: float = CAMERA_IDLE_SECONDS):
+    """Hẹn giờ tự động nhả camera khi không có request trong khoảng delay."""
     global _camera_idle_timer
     if _camera_idle_timer is None:
         timer = threading.Timer(delay, lambda: _release_idle_camera(timer))
@@ -98,28 +95,33 @@ def get_face_engine() -> FaceEngine:
     if _engine is None:
         with _engine_lock:
             if _engine is None:
-                print(">> [AI Service] Đang tải mô hình FaceEngine (buffalo_sc)...")
-                from src.face_engine import FaceEngine
-                _engine = FaceEngine(model_name="buffalo_sc")
-                print(">> [AI Service] FaceEngine đã sẵn sàng!")
+                print(">> [AI Service] Đang nạp InsightFace Model...")
+                _engine = FaceEngine()
+                print(">> [AI Service] Nạp Model thành công!")
     return _engine
 
 
-def get_camera() -> cv2.VideoCapture:
+def get_camera() -> CameraSource:
+    """Khởi tạo Camera: Hỗ trợ cả ESP32-CAM On-Demand Stream và Webcam."""
     global _cap, _camera_last_used
     with _camera_lock:
         if _cap is None or not _cap.isOpened():
             if _cap is not None:
                 _cap.release()
-            print(">> [AI Service] Đang mở webcam theo cấu hình...")
-            index = int(os.environ.get('PBL4_CAMERA_ID', '0'))
-            backend = os.environ.get('PBL4_CAMERA_BACKEND', 'dshow' if sys.platform == 'win32' else 'auto')
-            api = {'dshow': cv2.CAP_DSHOW, 'msmf': cv2.CAP_MSMF, 'auto': cv2.CAP_ANY}.get(backend)
-            if api is None:
-                raise ValueError('Invalid camera backend')
-            _cap = cv2.VideoCapture(index, api)
-            _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cam_source = os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
+            if cam_source == "esp32":
+                print(">> [AI Service] Đang mở Camera ESP32...")
+                _cap = CameraSource(source="esp32", width=640, height=480)
+            else:
+                print(">> [AI Service] Đang mở webcam nội bộ theo cấu hình...")
+                index = int(os.environ.get("PBL4_CAMERA_ID", "0"))
+                backend = os.environ.get("PBL4_CAMERA_BACKEND", "dshow" if sys.platform == "win32" else "auto")
+                api = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF, "auto": cv2.CAP_ANY}.get(backend)
+                if api is None:
+                    raise ValueError("Invalid camera backend")
+                _cap = cv2.VideoCapture(index, api)
+                _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         _camera_last_used = time.monotonic()
         _arm_camera_idle_timer()
         return _cap
@@ -140,12 +142,13 @@ def authorize_internal_request():
 
 @app.after_request
 def prevent_response_caching(response):
-    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers["Cache-Control"] = "private, no-store"
     return response
 
 
 def decode_enrollment_request():
     from PIL import Image
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         raise ValueError("JSON object required")
@@ -201,7 +204,7 @@ def health():
 
 @app.route("/internal/camera/frame", methods=["GET"])
 def camera_frame():
-    """Trả về 1 frame JPEG từ webcam nội bộ phục vụ Web GUI."""
+    """Trả về 1 frame JPEG từ Camera (ESP32-CAM hoặc Webcam) phục vụ Web GUI."""
     global _camera_last_used
     try:
         with _camera_lock:
@@ -220,10 +223,14 @@ def camera_frame():
         if not ret_enc:
             return Response(b"", status=500, mimetype="image/jpeg")
 
-        return Response(buf.tobytes(), mimetype="image/jpeg", headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-        })
+        return Response(
+            buf.tobytes(),
+            mimetype="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
     except Exception as e:
         return Response(b"Camera unavailable", status=503, mimetype="text/plain")
 
@@ -314,7 +321,7 @@ def enrollment_capture():
         if raw_emb.shape != (512,) or not np.isfinite(raw_emb).all() or not np.isfinite(norm) or norm <= 0:
             raise ValueError("Invalid face embedding")
         norm_emb = raw_emb / norm
-        raw_bytes = norm_emb.astype('<f4').tobytes()
+        raw_bytes = norm_emb.astype("<f4").tobytes()
 
         if len(raw_bytes) != 2048:
             return jsonify({"success": False, "message": f"Độ dài vector không đúng: {len(raw_bytes)}"}), 500
@@ -345,16 +352,23 @@ def gallery_refresh():
     """Serialize fetching and replacement, preserving the old file on any error."""
     try:
         def fetch():
-            response = requests.get(WEB_GALLERY_URL,
+            response = requests.get(
+                WEB_GALLERY_URL,
                 headers={"Authorization": "Bearer " + os.environ.get("PBL4_INTERNAL_TOKEN", "")},
-                timeout=10, allow_redirects=False)
+                timeout=10,
+                allow_redirects=False,
+            )
             if response.status_code != 200:
                 raise ValueError("Web gallery is unavailable")
             return build_gallery(response.json())
+
         gallery = replace_from_loader(EMBEDDINGS_PATH, fetch)
-        return jsonify({"success": True, "count": len(gallery),
-                        "total_samples": sum(person['n_images'] for person in gallery.values()),
-                        "message": "Gallery refreshed"})
+        return jsonify({
+            "success": True,
+            "count": len(gallery),
+            "total_samples": sum(person["n_images"] for person in gallery.values()),
+            "message": "Gallery refreshed",
+        })
     except Exception:
         app.logger.exception("Gallery refresh failed")
         return jsonify({"success": False, "message": "Gallery refresh failed; previous gallery preserved"}), 503

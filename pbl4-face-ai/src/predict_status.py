@@ -227,17 +227,22 @@ def run_status_test(*, predictor_factory, camera_factory, ui, clock=time.monoton
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Test Trang Thai AI 2")
+    parser.add_argument("--camera", type=str, default="0", help="Camera source ('0', '1', hoac 'esp32')")
+    args, _ = parser.parse_known_args()
+
     from src.runtime_config import load_environment
     load_environment()
     import cv2
     from src.camera_source import open_camera
     try:
-        run_status_test(predictor_factory=StatusPredictor,camera_factory=lambda:open_camera(0),ui=cv2)
+        run_status_test(predictor_factory=StatusPredictor, camera_factory=lambda: open_camera(args.camera), ui=cv2)
         return 0
     except Exception as error:
-        print('Status inference stopped:',str(error),file=sys.stderr)
+        print('Status inference stopped:', str(error), file=sys.stderr)
         return 1
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     raise SystemExit(main())

@@ -170,7 +170,7 @@ class CameraApiTests(unittest.TestCase):
         self.factory = unittest.mock.Mock(return_value=self.cap)
         camera_cv = types.SimpleNamespace(VideoCapture=self.factory, CAP_DSHOW=700, CAP_MSMF=1400, CAP_ANY=0,
             CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4, imencode=encode, IMWRITE_JPEG_QUALITY=1)
-        for context in (patch.dict(os.environ, PBL4_INTERNAL_TOKEN='camera-test-token'),
+        for context in (patch.dict(os.environ, PBL4_INTERNAL_TOKEN='camera-test-token', PBL4_CAMERA_MODE='local', CAMERA_SOURCE='local'),
                         patch.object(service, '_cap', None), patch.object(service, '_camera_idle_timer', None),
                         patch.object(service, '_camera_last_used', 0.0), patch.object(service, 'cv2', camera_cv),
                         patch.object(service.time, 'monotonic', lambda: self.now),

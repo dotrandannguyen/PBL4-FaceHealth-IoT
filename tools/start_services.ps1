@@ -4,9 +4,15 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $aiRoot = Join-Path $projectRoot 'pbl4-face-ai'
+
+# Tu dong nhan dien moi truong ao (.venv-pbl4 hoac .venv)
 $taskPython = Join-Path $aiRoot '.venv-pbl4\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $taskPython)) {
+    $taskPython = Join-Path $aiRoot '.venv\Scripts\python.exe'
+}
+if (-not (Test-Path -LiteralPath $taskPython)) { throw 'Missing virtualenv (.venv or .venv-pbl4). Follow pbl4-face-ai/docs/README.md.' }
+
 $runRoot = Join-Path $projectRoot '.pbl4-run'
-if (-not (Test-Path -LiteralPath $taskPython)) { throw 'Missing .venv-pbl4. Follow pbl4-face-ai/docs/README.md.' }
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 $statePath = Join-Path $runRoot 'services.json'
 $owned = @()
@@ -14,8 +20,10 @@ if (Test-Path -LiteralPath $statePath) {
     $previous = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $statePath -Raw)
     $owned = @($previous)
 }
+
+# Chi khoi dong AI Service (ESP32-CAM chay truc tiep On-Demand MJPEG Stream tren Port 81)
 $services = @(@{ Name='ai'; Script=(Join-Path $aiRoot 'ai_web_service.py'); Cwd=$aiRoot; Url='http://127.0.0.1:5001/health'; Service='PBL4 Face AI Service' })
-if (-not $AIOnly) { $services += @{ Name='upload'; Script=(Join-Path $projectRoot 'PhanCung\esp32_server\app.py'); Cwd=$projectRoot; Url='http://127.0.0.1:5000/'; Service='PBL4 JPEG receiver' } }
+
 foreach ($service in $services) {
     $healthy = $false
     try { $health = Invoke-RestMethod -Uri $service.Url -TimeoutSec 2; $healthy = $health.service -eq $service.Service } catch {}

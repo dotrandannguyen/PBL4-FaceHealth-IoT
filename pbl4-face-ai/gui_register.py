@@ -311,15 +311,13 @@ class RegisterApp(tk.Tk):
         self._refresh_list()
 
     def _load_engine_async(self):
+        self._loaded_engine = None
+        self._load_error = None
         def _load():
             try:
-                self.engine = FaceEngine(model_name='buffalo_sc')
-                self.engine_loading = False
-                self.status_var.set('InsightFace buffalo_sc san sang!')
-                self.btn_start.configure(state='normal')
+                self._loaded_engine = FaceEngine(model_name='buffalo_sc')
             except Exception as e:
-                self.engine_loading = False
-                self.status_var.set(f'Loi tai model: {e}')
+                self._load_error = str(e)
         self.btn_start.configure(state='disabled')
         threading.Thread(target=_load, daemon=True).start()
 
@@ -329,6 +327,18 @@ class RegisterApp(tk.Tk):
     def _poll_frame(self):
         if not self.running:
             return
+
+        # Kiểm tra trạng thái nạp model an toàn trên luồng chính của Tkinter
+        if self.engine_loading:
+            if getattr(self, "_loaded_engine", None) is not None:
+                self.engine = self._loaded_engine
+                self.engine_loading = False
+                self.status_var.set('InsightFace buffalo_sc san sang!')
+                self.btn_start.configure(state='normal')
+            elif getattr(self, "_load_error", None) is not None:
+                self.engine_loading = False
+                self.status_var.set(f'Loi tai model: {self._load_error}')
+
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret and frame is not None:

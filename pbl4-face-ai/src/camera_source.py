@@ -156,10 +156,11 @@ class CameraSource:
                 self._last_read_frame_count = self._frame_count
             self._last_read_was_new = is_new
 
-        if frame is not None:
+        # Nếu đã quá 3.5 giây không có ảnh mới từ ESP32 -> xem như mất kết nối, hiển thị Standby
+        if frame is not None and self.get_last_update_age() < 3.5:
             return True, frame.copy()
 
-        # Nếu chưa nhận được frame nào từ ESP32 -> trả về ảnh chờ sinh động
+        # Nếu chưa nhận được frame nào từ ESP32 hoặc mất kết nối -> trả về ảnh chờ sinh động
         standby = self._create_standby_frame()
         return True, standby
 
@@ -206,10 +207,14 @@ class CameraSource:
         import urllib.request
 
         while self._running:
+            # Thử làm mới địa chỉ mDNS nếu đang ở URL mặc định
+            if "esp32cam.local" in self.stream_url:
+                self._discover_stream_url()
+
             # 1. Thử kết nối trực tiếp vào luồng MJPEG Server của ESP32 (Port 81)
             try:
                 req = urllib.request.Request(self.stream_url, headers={"User-Agent": "OpenCV-Client"})
-                self._http_stream = urllib.request.urlopen(req, timeout=3.5)
+                self._http_stream = urllib.request.urlopen(req, timeout=3.0)
                 stream_bytes = b""
                 print(f"[CameraSource] 🟢 Đã kết nối luồng Video Stream: {self.stream_url} (15-25 FPS)")
 
@@ -218,18 +223,25 @@ class CameraSource:
                     if not chunk:
                         break
                     stream_bytes += chunk
+                    
                     a = stream_bytes.find(b"\xff\xd8")  # JPEG Start of Image
-                    b = stream_bytes.find(b"\xff\xd9")  # JPEG End of Image
-                    if a != -1 and b != -1 and b > a:
-                        jpg_bytes = stream_bytes[a : b + 2]
-                        stream_bytes = stream_bytes[b + 2 :]
-                        
-                        img = cv2.imdecode(np.frombuffer(jpg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-                        if img is not None and img.size > 0:
-                            with self._lock:
-                                self._current_frame = img
-                                self._frame_count += 1
-                                self._last_frame_mtime = time.time()
+                    if a != -1:
+                        b = stream_bytes.find(b"\xff\xd9", a + 2)  # JPEG End of Image (sau SOI)
+                        if b != -1:
+                            jpg_bytes = stream_bytes[a : b + 2]
+                            stream_bytes = stream_bytes[b + 2 :]
+                            
+                            img = cv2.imdecode(np.frombuffer(jpg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            if img is not None and img.size > 0:
+                                with self._lock:
+                                    self._current_frame = img
+                                    self._frame_count += 1
+                                    self._last_frame_mtime = time.time()
+                        elif len(stream_bytes) > 200000:
+                            # Tránh phình to bộ nhớ nếu mất gói EOI
+                            stream_bytes = stream_bytes[a:]
+                    elif len(stream_bytes) > 50000:
+                        stream_bytes = b""
                 
                 if self._http_stream is not None:
                     try:
@@ -245,13 +257,13 @@ class CameraSource:
             if not self._running:
                 break
 
-            # Fallback polling 200ms nếu stream chưa online
+            # Fallback polling nếu stream chưa online (chỉ chấp nhận ảnh mới trong 3 giây)
             try:
-                # Đọc từ latest.jpg đĩa hoặc /api/latest_frame.jpg
                 raw_bytes = None
+                now = time.time()
                 if self.fallback_file and self.fallback_file.exists():
                     mtime = self.fallback_file.stat().st_mtime
-                    if mtime != self._last_frame_mtime:
+                    if mtime != self._last_frame_mtime and (now - mtime < 4.0):
                         raw_bytes = self.fallback_file.read_bytes()
                         self._last_frame_mtime = mtime
                 if raw_bytes is None:

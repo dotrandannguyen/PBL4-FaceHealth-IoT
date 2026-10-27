@@ -1,22 +1,25 @@
 # ESP32-CAM Firmware — PBL4 FaceHealth IoT
 
-Thư mục chứa toàn bộ mã nguồn firmware PlatformIO cho 02 bo mạch **ESP32-CAM AI-Thinker (OV2640)** trong dự án điểm danh khuôn mặt và giám sát sức khỏe sinh viên.
+Thư mục chứa toàn bộ mã nguồn firmware PlatformIO cho bo mạch **ESP32-CAM AI-Thinker (OV2640)** trong dự án điểm danh khuôn mặt và giám sát sức khỏe sinh viên.
 
 ---
 
-## 📂 Cấu trúc thư mục
+## 📂 Cấu trúc thư mục chuẩn chỉnh
 
 ```
 ESP32-CAM/
 ├── include/
-│   ├── config.h          # File cấu hình trung tâm (WiFi, Server IP, Pinout, chu kỳ)
-│   └── camera_pins.h     # Sơ đồ chân camera OV2640 chuẩn AI-Thinker
+│   ├── config.h             # Cấu hình WiFi, mDNS, Server IP, Cổng Stream 81
+│   └── camera_pins.h        # Sơ đồ chân camera OV2640 chuẩn AI-Thinker
 ├── src/
-│   ├── camera_helper.h   # Tiện ích quản lý camera & PSRAM
-│   ├── http_helper.h     # Module gửi HTTP POST Multipart (ảnh + metadata JSON)
-│   └── main.cpp          # Mã nguồn chính hỗ trợ cả 2 mạch qua cờ biên dịch
-├── platformio.ini        # Cấu hình 2 môi trường: esp32cam_attendance & esp32cam_health
-├── WALKTHROUGH.md        # Hướng dẫn chi tiết nối dây, nạp code và kiểm thử thực tế
+│   ├── main.cpp             # Mã nguồn chính (Khởi tạo Cam, mDNS esp32cam.local, AP Portal)
+│   └── stream_server.h      # Server phát luồng MJPEG Stream On-Demand (Cổng 81)
+├── server/
+│   ├── app.py               # Flask Server phụ trợ quản lý kết nối (Cổng 5000)
+│   └── received_images/     # Thư mục lưu ảnh khi cần (đã dọn dẹp)
+├── arduino_legacy/          # [Backup 1 bản] Toàn bộ code Arduino IDE cũ
+├── platformio.ini           # Cấu hình nạp firmware qua PlatformIO (môi trường esp32cam_node1)
+├── WALKTHROUGH.md           # Hướng dẫn chi tiết nối dây, nạp code và kiểm thử thực tế
 └── README.md
 ```
 
@@ -25,12 +28,11 @@ ESP32-CAM/
 ## ⚡ Bắt đầu nhanh (Quick Start)
 
 1. **Xem sơ đồ nối dây & quy trình nạp**: Đọc file [WALKTHROUGH.md](WALKTHROUGH.md).
-2. **Cấu hình WiFi & Server**: Mở [include/config.h](include/config.h) và cập nhật `WIFI_SSID`, `WIFI_PASSWORD`, `SERVER_HOST`.
-3. **Biên dịch & Nạp code**:
+2. **Cấu hình WiFi**: Mở [include/config.h](include/config.h) và cập nhật `DEFAULT_WIFI_SSID`, `DEFAULT_WIFI_PASS`.
+3. **Biên dịch & Nạp code qua PlatformIO**:
    ```powershell
-   # Nạp cho Mạch 1 (Điểm danh)
-   pio run -e esp32cam_attendance -t upload
-
-   # Nạp cho Mạch 2 (Sức khỏe: MAX30102 + LCD1602 + LED)
-   pio run -e esp32cam_health -t upload
+   pio run -e esp32cam_node1 -t upload
    ```
+4. **Kiểm tra luồng Stream trực tiếp (On-Demand)**:
+   - Truy cập trình duyệt: `http://esp32cam.local:81/stream`
+   - Hoặc chạy từ Dashboard Python: Click **"Xem Trực Tiếp Stream"**.

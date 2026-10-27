@@ -27,9 +27,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from face_engine import FaceEngine, cosine_similarity, load_image
+try:
+    from .face_engine import FaceEngine, cosine_similarity, load_image
+except (ImportError, ValueError):
+    from face_engine import FaceEngine, cosine_similarity, load_image
 
 console = Console()
 

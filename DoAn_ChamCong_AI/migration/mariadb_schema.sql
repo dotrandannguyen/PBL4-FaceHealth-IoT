@@ -70,7 +70,6 @@ CREATE TABLE `LichSuSucKhoe` (
     `MaNV` INT NULL,
     `NhipTim` INT NULL,
     `SpO2` DOUBLE NULL,
-    `TheTrang` VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT 'Bình thường',
     `ThoiGian` DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (`MaSK`),
     CONSTRAINT `FK__LichSuSucK__MaNV__5535A963`
@@ -113,9 +112,6 @@ CREATE TABLE `ChamCong` (
     `GioRa` DATETIME(3) NULL,
     `MaTB` INT NULL,
     `MaCa` INT NULL,
-    `TheTrangVao` VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT 'Bình thường',
-    `TheTrangRa` VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
-    `TheTrang` VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT 'Bình thường',
     `AnhVao` LONGBLOB NULL,
     `AnhRa` LONGBLOB NULL,
     PRIMARY KEY (`MaCC`),

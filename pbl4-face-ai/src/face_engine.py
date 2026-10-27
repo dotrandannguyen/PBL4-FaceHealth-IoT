@@ -76,7 +76,7 @@ class FaceEngine:
             np.ndarray shape (512,) đã normalize, hoặc None nếu không tìm thấy mặt
         """
         faces = self.detect(image)
-        if not faces:
+        if len(faces) != 1:
             return None
 
         # Chọn mặt có diện tích bbox lớn nhất
@@ -84,7 +84,10 @@ class FaceEngine:
         emb = main_face.embedding
 
         # L2-normalize
-        emb = emb / np.linalg.norm(emb)
+        norm = float(np.linalg.norm(emb))
+        if emb.shape != (512,) or not np.isfinite(emb).all() or not np.isfinite(norm) or norm <= 0:
+            return None
+        emb = emb / norm
         return emb
 
     # ── Draw ──────────────────────────────────────────────────────────────────

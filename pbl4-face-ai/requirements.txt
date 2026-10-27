@@ -21,8 +21,4 @@ scipy>=1.11.0
 
 # Utils & Network
 requests>=2.31.0
-
-# API Server cho ESP32-CAM
-fastapi>=0.110.0
-uvicorn>=0.28.0
-python-multipart>=0.0.9
+flask>=3.0.0

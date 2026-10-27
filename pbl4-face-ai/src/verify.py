@@ -21,6 +21,8 @@ import pickle
 import argparse
 import numpy as np
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -37,21 +39,13 @@ EMBEDDINGS_PATH = Path(__file__).parent.parent / "data" / "embeddings.pkl"
 DEFAULT_THRESHOLD = 0.45
 
 # Cache DB trong memory để tránh đọc file pkl mỗi lần gọi
-_DB_CACHE: dict | None = None
-
+from src.gallery_store import GalleryCache
+_GALLERY_CACHE = GalleryCache()
 
 # ─── Load DB ──────────────────────────────────────────────────────────────────
 def load_db(force_reload: bool = False) -> dict:
-    global _DB_CACHE
-    if _DB_CACHE is not None and not force_reload:
-        return _DB_CACHE
-    if not EMBEDDINGS_PATH.exists():
-        console.print(f"[red]❌ Không tìm thấy database: {EMBEDDINGS_PATH}[/]")
-        console.print("[yellow]→ Hãy đăng ký sinh viên trước bằng register.py[/]")
-        return {}
-    with open(EMBEDDINGS_PATH, "rb") as f:
-        _DB_CACHE = pickle.load(f)
-    return _DB_CACHE
+    """Refresh this process cache after an atomic replacement or deletion."""
+    return _GALLERY_CACHE.load(EMBEDDINGS_PATH, force_reload=force_reload)
 
 
 # ─── Xác minh 1:1 ────────────────────────────────────────────────────────────
@@ -116,6 +110,7 @@ def identify(
     engine: FaceEngine,
     image: np.ndarray,
     threshold: float = DEFAULT_THRESHOLD,
+    probe_embedding=None,
 ) -> dict:
     """
     Nhận dạng 1:N — không cần biết trước là ai.
@@ -127,7 +122,7 @@ def identify(
     if not db:
         return {"match": False, "name": "Unknown", "student_id": None, "similarity": -1.0, "threshold": threshold}
 
-    probe_emb = engine.embed(image)
+    probe_emb = engine.embed(image) if probe_embedding is None else probe_embedding
     if probe_emb is None:
         return {"match": False, "name": "Unknown", "student_id": None, "similarity": -1.0, "threshold": threshold}
 
@@ -196,7 +191,8 @@ def verify_realtime(
     if not db:
         return
 
-    cap = cv2.VideoCapture(0)
+    from src.camera_source import open_camera
+    cap = open_camera(0)
     if not cap.isOpened():
         console.print("[red]❌ Không mở được webcam![/]")
         return

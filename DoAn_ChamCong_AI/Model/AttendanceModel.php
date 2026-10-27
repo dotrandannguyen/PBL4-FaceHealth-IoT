@@ -43,7 +43,6 @@ final class AttendanceModel
             FROM NhanVien NV
             LEFT JOIN PhanCaNhanVien PCN
                 ON PCN.MaNV = NV.MaNV AND PCN.NgayLamViec = :work_date
-            LEFT JOIN CaLamViec CLV ON CLV.MaCa = PCN.MaCa
             LEFT JOIN ChamCong CC ON CC.MaCC = (
                 SELECT CC2.MaCC
                 FROM ChamCong CC2
@@ -53,6 +52,9 @@ final class AttendanceModel
                 ORDER BY CC2.GioVao DESC, CC2.MaCC DESC
                 LIMIT 1
             )
+            LEFT JOIN CaLamViec CLV
+                ON CLV.MaCa = COALESCE(CC.MaCa, PCN.MaCa)
+                AND (CC.MaCC IS NOT NULL OR CLV.TrangThai = 1)
             WHERE 1 = 1 {$filter}
             ORDER BY NV.MaNV
             SQL;
@@ -182,7 +184,7 @@ final class AttendanceModel
             SELECT PCN.MaCa, CLV.TenCa, CLV.GioBatDau, CLV.GioKetThuc
             FROM PhanCaNhanVien PCN
             INNER JOIN CaLamViec CLV ON CLV.MaCa = PCN.MaCa
-            WHERE PCN.MaNV = :employee_id AND PCN.NgayLamViec = :work_date
+            WHERE PCN.MaNV = :employee_id AND PCN.NgayLamViec = :work_date AND CLV.TrangThai = 1
             LIMIT 1
             SQL);
         $statement->execute([
@@ -208,13 +210,15 @@ final class AttendanceModel
         return $shift === false ? null : $shift;
     }
 
-    public function ensureEmployee(int $employeeId, string $defaultName = 'Nhân viên'): void
+    /** Existing attendance keeps its original shift, even after deactivation. */
+    public function findRecordedShift(int $shiftId): ?array
     {
-        $statement = Database::getConnection()->prepare(<<<'SQL'
-            INSERT IGNORE INTO NhanVien (MaNV, HoTen, MaVaiTro)
-            VALUES (:employee_id, :name, 2)
-            SQL);
-        $statement->execute(['employee_id' => $employeeId, 'name' => $defaultName]);
+        $statement = Database::getConnection()->prepare(
+            'SELECT MaCa, TenCa, GioBatDau, GioKetThuc FROM CaLamViec WHERE MaCa = :id'
+        );
+        $statement->execute(['id' => $shiftId]);
+        $shift = $statement->fetch();
+        return $shift === false ? null : $shift;
     }
 
     public function findTodayRecord(int $employeeId, string $date): ?array
@@ -222,13 +226,14 @@ final class AttendanceModel
         $statement = Database::getConnection()->prepare(<<<'SQL'
             SELECT MaCC, GioVao, GioRa, MaCa
             FROM ChamCong
-            WHERE MaNV = :employee_id AND DATE(GioVao) = :work_date
+            WHERE MaNV = :employee_id AND GioVao >= :work_date AND GioVao < DATE_ADD(:end_date, INTERVAL 1 DAY)
             ORDER BY MaCC DESC
             LIMIT 1
             SQL);
         $statement->execute([
             'employee_id' => $employeeId,
             'work_date' => $date,
+            'end_date' => $date,
         ]);
         $record = $statement->fetch();
 
@@ -246,16 +251,17 @@ final class AttendanceModel
     }
 
     /** Tạo bản ghi check-in và trả MaCC mới; ảnh JPEG được lưu dạng LOB nếu có. */
-    public function insertCheckin(int $employeeId, int $deviceId, int $shiftId, ?string $image, string $theTrang = 'Bình thường'): int
+    public function insertCheckin(int $employeeId, int $deviceId, int $shiftId, ?string $image, string $theTrang = 'Chưa đánh giá', ?string $occurredAt = null): int
     {
         $statement = Database::getConnection()->prepare(<<<'SQL'
             INSERT INTO ChamCong (MaNV, GioVao, GioRa, MaTB, MaCa, AnhVao, TheTrangVao, TheTrang)
-            VALUES (:employee_id, CURRENT_TIMESTAMP, NULL, :device_id, :shift_id, :image, :the_trang_vao, :the_trang)
+            VALUES (:employee_id, :occurred_at, NULL, :device_id, :shift_id, :image, :the_trang_vao, :the_trang)
             SQL);
         $statement->bindValue(':employee_id', $employeeId, PDO::PARAM_INT);
         $statement->bindValue(':device_id', $deviceId, PDO::PARAM_INT);
         $statement->bindValue(':shift_id', $shiftId, PDO::PARAM_INT);
         $statement->bindValue(':image', $image, $image === null ? PDO::PARAM_NULL : PDO::PARAM_LOB);
+        $statement->bindValue(':occurred_at', $occurredAt ?? date('Y-m-d H:i:s'));
         $statement->bindValue(':the_trang_vao', $theTrang);
         $statement->bindValue(':the_trang', $theTrang);
         $statement->execute();
@@ -264,9 +270,9 @@ final class AttendanceModel
     }
 
     /** Ghi giờ checkout và ảnh ra cho đúng MaCC. */
-    public function updateCheckout(int $attendanceId, ?string $image, ?string $theTrang = null): void
+    public function updateCheckout(int $attendanceId, ?string $image, ?string $theTrang = null, ?string $occurredAt = null): void
     {
-        $sql = 'UPDATE ChamCong SET GioRa = CURRENT_TIMESTAMP, AnhRa = :image';
+        $sql = 'UPDATE ChamCong SET GioRa = :occurred_at, AnhRa = :image';
         if ($theTrang !== null) {
             $sql .= ', TheTrangRa = :the_trang_ra, TheTrang = :the_trang';
         }
@@ -278,6 +284,7 @@ final class AttendanceModel
             $statement->bindValue(':the_trang', $theTrang);
         }
         $statement->bindValue(':attendance_id', $attendanceId, PDO::PARAM_INT);
+        $statement->bindValue(':occurred_at', $occurredAt ?? date('Y-m-d H:i:s'));
         $statement->execute();
     }
 

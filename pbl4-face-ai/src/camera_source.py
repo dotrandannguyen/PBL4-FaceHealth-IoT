@@ -1,21 +1,28 @@
 """
 camera_source.py — Universal Camera Source Adapter cho PBL4 FaceHealth IoT.
-Hỗ trợ cả Webcam máy tính (Index 0, 1) và ESP32-CAM không dây (qua Flask Server Cổng 5000).
+Hỗ trợ cả ESP32-CAM không dây (On-Demand MJPEG Stream trên Port 81) và Webcam máy tính.
 
 Cung cấp interface tương thích hoàn toàn với cv2.VideoCapture:
   - isOpened() -> bool
   - read() -> (ret, frame)
   - release()
-Bổ sung các thuộc tính tiện ích:
-  - is_esp32 (bool)
-  - is_new_frame (bool)
-  - last_frame_time (float)
+  - set(propId, value) -> bool
+
+Tích hợp:
+  - CameraSource: Bộ giải mã luồng video MJPEG thời gian thực (< 80ms) từ ESP32-CAM (mDNS esp32cam.local:81/stream)
+  - RelayCamera: Relay luồng frame từ AI REST Service qua Bearer token nội bộ
+  - open_camera: Hàm factory thống nhất cho toàn bộ hệ thống
+  - FramePump: Luồng công nhân xử lý nền an toàn cho Tkinter và AI
 """
 
-import sys
+from __future__ import annotations
+import io
 import os
+import sys
 import time
+import socket
 import threading
+import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -28,14 +35,14 @@ if sys.platform == "win32":
 
 import cv2
 import numpy as np
+from PIL import Image
+
+from .runtime_config import load_environment
 
 
-# Đường dẫn mặc định tới thư mục server ESP32
+# Đường dẫn mặc định
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = BASE_DIR.parent
-ESP32_SERVER_DIR = PROJECT_DIR / "ESP32-CAM" / "server"
-LATEST_IMAGE_FILE = ESP32_SERVER_DIR / "latest.jpg"
-DEFAULT_ESP32_URL = "http://127.0.0.1:5000/api/latest_frame.jpg"
 DEFAULT_ESP32_STREAM_URL = "http://esp32cam.local:81/stream"
 
 
@@ -48,249 +55,133 @@ class CameraSource:
     def __init__(
         self,
         source: Union[int, str] = 0,
-        server_url: str = DEFAULT_ESP32_URL,
-        fallback_file: Optional[Path] = LATEST_IMAGE_FILE,
+        stream_url: str = DEFAULT_ESP32_STREAM_URL,
+        fallback_file: Optional[Path] = None,
         width: int = 1280,
         height: int = 720,
     ):
         self.source = source
-        self.server_url = server_url
-        self.stream_url = DEFAULT_ESP32_STREAM_URL
+        self.stream_url = stream_url
         self.fallback_file = fallback_file
         self.target_width = width
         self.target_height = height
 
-        # Xác định chế độ ESP32
-        source_str = str(source).strip().lower()
+        # Xác định chế độ: ESP32-CAM hay Webcam
         self.is_esp32 = (
-            source_str in ("esp32", "esp32-cam", "esp", "wifi", "network")
-            or source_str.startswith("http://")
-            or source_str.startswith("https://")
+            isinstance(source, str)
+            and (source.lower() == "esp32" or source.startswith("http://") or source.startswith("https://"))
         )
 
-        self._running = True
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._http_stream = None
-        
-        # Biến trạng thái ESP32
-        self._current_frame: Optional[np.ndarray] = None
-        self._last_frame_mtime: float = 0.0
-        self._last_read_ts: float = 0.0
-        self._frame_count: int = 0
-        self._last_read_frame_count: int = -1
-        self._last_read_was_new: bool = False
         self._lock = threading.Lock()
-        self._thread: Optional[threading.Thread] = None
-
-        if not self.is_esp32:
-            # Chế độ Webcam tiêu chuẩn
-            cam_idx = 0
-            try:
-                cam_idx = int(source)
-            except Exception:
-                cam_idx = 0
-            backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
-            self._cap = cv2.VideoCapture(cam_idx, backend)
-            if self._cap.isOpened():
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            print(f"[CameraSource] 📷 Đã mở Webcam Index {cam_idx} ({width}x{height})")
-        else:
-            # Tự động lấy URL stream mới nhất từ Server nếu có
-            if source_str.startswith("http"):
-                if "/stream" in source_str:
-                    self.stream_url = source_str
-                else:
-                    self.server_url = source_str
-            else:
-                self._discover_stream_url()
-
-            print(f"[CameraSource] 📡 Khởi động ESP32-CAM Reader (Stream: {self.stream_url})")
-            self._thread = threading.Thread(target=self._esp32_worker, daemon=True)
-            self._thread.start()
-
-    def _discover_stream_url(self) -> None:
-        """Tự động tìm kiếm ESP32-CAM qua tên miền mDNS (esp32cam.local) hoặc Flask Server."""
-        import socket
-        import urllib.request
-        import json
-
-        # 1. Thử phân giải tên miền mDNS: esp32cam.local
-        try:
-            resolved_ip = socket.gethostbyname("esp32cam.local")
-            if resolved_ip:
-                self.stream_url = f"http://esp32cam.local:81/stream"
-                print(f"[CameraSource] 🎯 Đã tìm thấy ESP32-CAM qua mDNS (esp32cam.local -> {resolved_ip})")
-                return
-        except Exception:
-            pass
-
-        # 2. Nếu chưa thấy mDNS, hỏi Flask Server cổng 5000
-        try:
-            with urllib.request.urlopen("http://127.0.0.1:5000/api/camera_ip", timeout=0.8) as resp:
-                if resp.status == 200:
-                    info = json.loads(resp.read().decode())
-                    if info.get("stream_url"):
-                        self.stream_url = info["stream_url"]
-                        return
-        except Exception:
-            pass
-
-    def isOpened(self) -> bool:
-        if not self.is_esp32:
-            return self._cap is not None and self._cap.isOpened()
-        return self._running
-
-    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        if not self.is_esp32:
-            if self._cap is None:
-                return False, None
-            self._last_read_was_new = True
-            return self._cap.read()
-
-        # Đọc frame từ bộ đệm ESP32
-        with self._lock:
-            frame = self._current_frame
-            is_new = (self._frame_count > 0 and self._frame_count != self._last_read_frame_count)
-            if is_new:
-                self._last_read_frame_count = self._frame_count
-            self._last_read_was_new = is_new
-
-        # Nếu đã quá 3.5 giây không có ảnh mới từ ESP32 -> xem như mất kết nối, hiển thị Standby
-        if frame is not None and self.get_last_update_age() < 3.5:
-            return True, frame.copy()
-
-        # Nếu chưa nhận được frame nào từ ESP32 hoặc mất kết nối -> trả về ảnh chờ sinh động
-        standby = self._create_standby_frame()
-        return True, standby
-
-    def is_new_frame(self) -> bool:
-        """Kiểm tra xem frame vừa đọc từ lần gọi read() gần nhất có phải là frame mới nhận từ ESP32 hay không."""
-        if not self.is_esp32:
-            return True
-        return self._last_read_was_new
-
-    def get_last_update_age(self) -> float:
-        """Thời gian trôi qua (giây) kể từ bức ảnh ESP32 gần nhất."""
-        if self._last_frame_mtime <= 0:
-            return 9999.0
-        return max(0.0, time.time() - self._last_frame_mtime)
-
-    def set(self, propId: int, value: float) -> bool:
-        if self._cap is not None:
-            return self._cap.set(propId, value)
-        return True
-
-    def get(self, propId: int) -> float:
-        if self._cap is not None:
-            return self._cap.get(propId)
-        return 0.0
-
-    def release(self) -> None:
+        self._current_frame: Optional[np.ndarray] = None
         self._running = False
-        if self._http_stream is not None:
-            try:
-                self._http_stream.close()
-            except Exception:
-                pass
-            self._http_stream = None
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
-        print("[CameraSource] Đã giải phóng Camera Source (Đã gửi tín hiệu ngắt kết nối tới ESP32).")
+        self._thread: Optional[threading.Thread] = None
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._opened = False
+        self._frame_count = 0
+        self._last_frame_time = 0.0
 
-    # -------------------------------------------------------------------------
-    # LUỒNG NỀN ĐỌC MJPEG STREAM HOẶC POLLING TỪ ESP32
-    # -------------------------------------------------------------------------
-    def _esp32_worker(self) -> None:
-        """Đọc luồng video MJPEG thời gian thực từ ESP32-CAM với độ trễ 0ms."""
-        import urllib.request
+        if self.is_esp32:
+            if isinstance(source, str) and (source.startswith("http://") or source.startswith("https://")):
+                self.stream_url = source
+            self._init_esp32_stream()
+        else:
+            self._init_webcam()
+
+    def _init_webcam(self):
+        """Khởi tạo Webcam vật lý (Local OpenCV VideoCapture)."""
+        idx = int(self.source) if isinstance(self.source, (int, str)) and str(self.source).isdigit() else 0
+        backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+        self._cap = cv2.VideoCapture(idx, backend)
+        if not self._cap.isOpened():
+            self._cap = cv2.VideoCapture(idx)
+
+        if self._cap.isOpened():
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
+            self._opened = True
+            print(f">> [CameraSource] Đã mở thành công Webcam (Index {idx}).")
+        else:
+            self._opened = False
+            print(f">> [CameraSource] ❌ Không thể mở Webcam (Index {idx})!")
+
+    def _init_esp32_stream(self):
+        """Khởi tạo luồng nền giải mã On-Demand MJPEG Stream từ ESP32-CAM."""
+        self._running = True
+        self._opened = True
+        self._current_frame = self._create_standby_frame()
+        self._thread = threading.Thread(target=self._mjpeg_stream_worker, daemon=True, name="ESP32-MJPEG-Worker")
+        self._thread.start()
+        print(f">> [CameraSource] Đã kích hoạt On-Demand Stream Worker ({self.stream_url}).")
+
+    def _resolve_ip(self, host: str) -> Optional[str]:
+        """Phân giải mDNS hoặc DNS host thành địa chỉ IP thực tế."""
+        try:
+            return socket.gethostbyname(host)
+        except Exception:
+            return None
+
+    def _mjpeg_stream_worker(self):
+        """Luồng chuyên dụng đọc và giải mã dòng multipart/x-mixed-replace JPEG từ ESP32."""
+        stream_bytes = b""
+        cached_ip = None
+        last_dns_check = 0.0
 
         while self._running:
-            # Thử làm mới địa chỉ mDNS nếu đang ở URL mặc định
+            url_to_connect = self.stream_url
+
+            # Tự động phân giải mDNS nếu url chứa tên miền .local
             if "esp32cam.local" in self.stream_url:
-                self._discover_stream_url()
+                now = time.time()
+                if cached_ip is None or (now - last_dns_check > 3.0):
+                    last_dns_check = now
+                    resolved = self._resolve_ip("esp32cam.local")
+                    if resolved:
+                        cached_ip = resolved
+                if cached_ip:
+                    url_to_connect = self.stream_url.replace("esp32cam.local", cached_ip)
 
-            # 1. Thử kết nối trực tiếp vào luồng MJPEG Server của ESP32 (Port 81)
             try:
-                req = urllib.request.Request(self.stream_url, headers={"User-Agent": "OpenCV-Client"})
-                self._http_stream = urllib.request.urlopen(req, timeout=3.0)
-                stream_bytes = b""
-                print(f"[CameraSource] 🟢 Đã kết nối luồng Video Stream: {self.stream_url} (15-25 FPS)")
+                req = urllib.request.Request(
+                    url_to_connect,
+                    headers={"User-Agent": "PBL4-FaceAI-Client", "Connection": "keep-alive"},
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as stream:
+                    stream_bytes = b""
+                    while self._running:
+                        chunk = stream.read(4096)
+                        if not chunk:
+                            break
+                        stream_bytes += chunk
 
-                while self._running:
-                    chunk = self._http_stream.read(4096)
-                    if not chunk:
-                        break
-                    stream_bytes += chunk
-                    
-                    a = stream_bytes.find(b"\xff\xd8")  # JPEG Start of Image
-                    if a != -1:
-                        b = stream_bytes.find(b"\xff\xd9", a + 2)  # JPEG End of Image (sau SOI)
-                        if b != -1:
-                            jpg_bytes = stream_bytes[a : b + 2]
-                            stream_bytes = stream_bytes[b + 2 :]
-                            
-                            img = cv2.imdecode(np.frombuffer(jpg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-                            if img is not None and img.size > 0:
-                                with self._lock:
-                                    self._current_frame = img
-                                    self._frame_count += 1
-                                    self._last_frame_mtime = time.time()
-                        elif len(stream_bytes) > 200000:
-                            # Tránh phình to bộ nhớ nếu mất gói EOI
-                            stream_bytes = stream_bytes[a:]
-                    elif len(stream_bytes) > 50000:
-                        stream_bytes = b""
-                
-                if self._http_stream is not None:
-                    try:
-                        self._http_stream.close()
-                    except Exception:
-                        pass
-                    self._http_stream = None
+                        # Tìm header bắt đầu JPEG (0xFF 0xD8) và kết thúc JPEG (0xFF 0xD9)
+                        a = stream_bytes.find(b"\xff\xd8")
+                        if a != -1:
+                            b = stream_bytes.find(b"\xff\xd9", a + 2)
+                            if b != -1:
+                                jpg = stream_bytes[a : b + 2]
+                                stream_bytes = stream_bytes[b + 2 :]
 
+                                if len(jpg) > 100:
+                                    img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                    if img is not None and img.size > 0:
+                                        with self._lock:
+                                            self._current_frame = img
+                                            self._frame_count += 1
+                                            self._last_frame_time = time.time()
             except Exception:
-                # 2. Nếu luồng stream chưa sẵn sàng, fallback đọc qua Flask Server (Port 5000)
                 pass
 
             if not self._running:
                 break
 
-            # Fallback polling nếu stream chưa online (chỉ chấp nhận ảnh mới trong 3 giây)
-            try:
-                raw_bytes = None
-                now = time.time()
-                if self.fallback_file and self.fallback_file.exists():
-                    mtime = self.fallback_file.stat().st_mtime
-                    if mtime != self._last_frame_mtime and (now - mtime < 4.0):
-                        raw_bytes = self.fallback_file.read_bytes()
-                        self._last_frame_mtime = mtime
-                if raw_bytes is None:
-                    req2 = urllib.request.Request(self.server_url, headers={"User-Agent": "PBL4-Fallback"})
-                    with urllib.request.urlopen(req2, timeout=0.8) as resp:
-                        if resp.status == 200:
-                            content = resp.read()
-                            if len(content) > 100:
-                                raw_bytes = content
-                                self._last_frame_mtime = time.time()
-
-                if raw_bytes and len(raw_bytes) > 100:
-                    img = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
-                    if img is not None and img.size > 0:
-                        with self._lock:
-                            self._current_frame = img
-                            self._frame_count += 1
-            except Exception:
-                pass
-
             time.sleep(0.5)  # Thử kết nối lại stream sau 0.5s
 
     def _create_standby_frame(self) -> np.ndarray:
-        """Tạo khung hình chờ khi chưa có tín hiệu ESP32."""
+        """Tạo khung hình chờ trực quan khi chưa có tín hiệu ESP32."""
         h, w = 480, 640
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
-        canvas[:] = (20, 24, 30)  # Nền xám đen sang trọng
+        canvas[:] = (20, 24, 30)  # Nền xám đen công nghệ
 
         # Vẽ viền xanh
         cv2.rectangle(canvas, (10, 10), (w - 10, h - 10), (50, 60, 75), 2)
@@ -301,8 +192,8 @@ class CameraSource:
 
         # Hướng dẫn
         sub1 = "1. Kiem tra ESP32-CAM da bat nguon & ket noi WiFi"
-        sub2 = "2. Dam bao Server dang chay tren Cong 5000"
-        sub3 = f"Server Endpoint: {self.server_url}"
+        sub2 = "2. Ket noi cung mang 2.4GHz voi May tinh"
+        sub3 = f"3. Dia chi Stream: {self.stream_url}"
         cv2.putText(canvas, sub1, (70, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
         cv2.putText(canvas, sub2, (70, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
         cv2.putText(canvas, sub3, (70, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 180, 255), 1)
@@ -313,6 +204,177 @@ class CameraSource:
         cv2.circle(canvas, (w // 2, 380), 8, dot_color, -1)
 
         return canvas
+
+    def isOpened(self) -> bool:
+        if self.is_esp32:
+            return self._opened
+        return bool(self._cap and self._cap.isOpened())
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if not self.isOpened():
+            return False, None
+
+        if self.is_esp32:
+            with self._lock:
+                now = time.time()
+                # Nếu mất kết nối quá 3.5s, trả về màn hình chờ động
+                if self._last_frame_time > 0 and (now - self._last_frame_time > 3.5):
+                    return True, self._create_standby_frame()
+                if self._current_frame is not None:
+                    return True, self._current_frame.copy()
+            return True, self._create_standby_frame()
+        else:
+            ret, frame = self._cap.read()
+            return ret, frame
+
+    def set(self, propId: int, value: float) -> bool:
+        if self._cap is not None:
+            return self._cap.set(propId, value)
+        return False
+
+    def release(self):
+        self._running = False
+        self._opened = False
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+
+class RelayCamera:
+    """Relay kết nối camera qua AI REST Service nội bộ với Bearer token."""
+
+    def __init__(self, url: str, token: str):
+        import requests
+
+        self.session = requests.Session()
+        self.session.trust_env = False
+        self.session.headers["Authorization"] = "Bearer " + token
+        self.url = url
+        self.opened = True
+
+    def isOpened(self) -> bool:
+        return self.opened
+
+    def set(self, *args) -> bool:
+        return False
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if not self.opened:
+            return False, None
+        try:
+            with self.session.get(self.url, timeout=(1, 1.5), stream=True, allow_redirects=False) as response:
+                if (
+                    response.status_code != 200
+                    or response.headers.get("Content-Type", "").split(";")[0].strip().lower() != "image/jpeg"
+                ):
+                    return False, None
+                limit = 5 * 1024 * 1024
+                if int(response.headers.get("Content-Length", "0")) > limit:
+                    return False, None
+                content = bytearray()
+                deadline = time.monotonic() + 2
+                for chunk in response.iter_content(65536):
+                    content.extend(chunk)
+                    if len(content) > limit or time.monotonic() > deadline:
+                        return False, None
+                with Image.open(io.BytesIO(content)) as image:
+                    if image.format != "JPEG" or image.width * image.height > 16000000:
+                        return False, None
+                    image.verify()
+                frame = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+                return frame is not None, frame
+        except Exception:
+            return False, None
+
+    def release(self):
+        self.opened = False
+        self.session.close()
+
+
+def open_camera(camera_id: Union[int, str] = 0):
+    """
+    Hàm Factory thống nhất để khởi tạo nguồn Camera trong toàn bộ dự án.
+    Tự động hỗ trợ:
+      - 'esp32' hoặc URL stream -> CameraSource (ESP32-CAM MJPEG Stream)
+      - mode 'local' hoặc index số -> CameraSource (Webcam cục bộ)
+      - mode 'relay' -> RelayCamera (đọc từ AI Service endpoint)
+    """
+    load_environment()
+    mode = os.environ.get("PBL4_CAMERA_MODE", "auto")
+
+    # 1. Nếu chỉ định cụ thể ESP32 hoặc mode được đặt là esp32
+    if str(camera_id).lower() == "esp32" or mode == "esp32":
+        return CameraSource(source="esp32", width=1280, height=720)
+
+    # 2. Nếu là URL stream trực tiếp
+    if isinstance(camera_id, str) and (camera_id.startswith("http://") or camera_id.startswith("https://")):
+        return CameraSource(source=camera_id, width=1280, height=720)
+
+    # 3. Nếu là chế độ Local hoặc chọn webcam theo index
+    if mode == "local" or str(camera_id).isdigit():
+        idx = int(camera_id) if str(camera_id).isdigit() else 0
+        return CameraSource(source=idx, width=1280, height=720)
+
+    # 4. Chế độ Relay qua AI Service
+    if mode == "relay":
+        url = os.environ.get("PBL4_AI_URL", os.environ.get("AI_SERVICE_URL", "http://127.0.0.1:5001")).rstrip("/")
+        token = os.environ.get("PBL4_INTERNAL_TOKEN", "")
+        return RelayCamera(url + "/internal/camera/frame", token)
+
+    # 5. Mặc định: Trả về CameraSource cho camera_id tương ứng
+    return CameraSource(source=camera_id, width=1280, height=720)
+
+
+class FramePump:
+    """Worker đọc frame và phát hiện mặt ở thread nền, an toàn không gây lag GUI."""
+
+    def __init__(self, factory, engine):
+        self.factory = factory
+        self.engine = engine
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.latest = None
+        self.thread = threading.Thread(target=self.run, name="registration-camera", daemon=True)
+        self.thread.start()
+
+    def run(self):
+        camera = None
+        try:
+            camera = self.factory()
+            while not self.stop.is_set():
+                try:
+                    ok, frame = camera.read()
+                    captured_at = time.monotonic()
+                    engine = self.engine()
+                    faces = engine.detect(frame) if ok and frame is not None and engine is not None else []
+                    with self.lock:
+                        self.latest = (frame if ok else None, faces, captured_at)
+                except Exception:
+                    with self.lock:
+                        self.latest = (None, [], time.monotonic())
+                self.stop.wait(0.03)
+        except Exception:
+            with self.lock:
+                self.latest = (None, [], time.monotonic())
+        finally:
+            if camera is not None:
+                camera.release()
+
+    def snapshot(self, max_age: float = 0.75):
+        frame, faces, _ = self.snapshot_with_timestamp(max_age)
+        return frame, faces
+
+    def snapshot_with_timestamp(self, max_age: float = 0.75):
+        if self.stop.is_set():
+            return None, [], None
+        with self.lock:
+            value = self.latest
+        if value is None or time.monotonic() - value[2] > max_age:
+            return None, [], None
+        return value
+
+    def close(self):
+        self.stop.set()
 
 
 def get_camera_source(source: Union[int, str] = 0, width: int = 1280, height: int = 720) -> CameraSource:

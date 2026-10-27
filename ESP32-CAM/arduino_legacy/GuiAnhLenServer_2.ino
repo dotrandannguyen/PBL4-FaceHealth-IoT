@@ -3,6 +3,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include "wifi_config.h"
 
 // ===========================
 // Select camera model in board_config.h
@@ -12,21 +13,25 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char *ssid = "Redmi Note 14";
-const char *password = "frree111";
+const char* ssid = PBL4_WIFI_SSID;
+const char* password = PBL4_WIFI_PASSWORD;
 
 // Thay bang IPv4 cua may tinh
-const char* serverUrl = "http://10.10.48.221:5000/upload";
+const char* serverUrl = PBL4_UPLOAD_URL;
 
 void startCameraServer();
 void setupLedFlash();
+static bool cameraReady = false;
+static bool cameraServerStarted = false;
+static unsigned long lastReconnectAttempt = 0;
+
 
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
 
-  camera_config_t config;
+  camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
   config.pin_d0 = Y2_GPIO_NUM;
@@ -86,6 +91,7 @@ void setup() {
     return;
   }
 
+  cameraReady = true;
   sensor_t *s = esp_camera_sensor_get();
   // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
@@ -122,14 +128,19 @@ void setup() {
   WiFi.setSleep(false);
 
   Serial.print("WiFi connecting");
-  while (WiFi.status() != WL_CONNECTED) {
+  unsigned long connectStarted = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - connectStarted < 20000) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("");
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not ready; reconnect will be retried.");
+    return;
+  }
   Serial.println("WiFi connected");
-
   startCameraServer();
+  cameraServerStarted = true;
 
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
@@ -138,54 +149,53 @@ void setup() {
 
 
 void guiAnhLenServer() {
-  // Chup mot anh tu camera
+  if (!cameraReady || WiFi.status() != WL_CONNECTED) return;
   camera_fb_t *fb = esp_camera_fb_get();
-
-  if (fb == NULL) {
-    Serial.println("Loi: Khong chup duoc anh!");
+  if (fb == nullptr) {
+    Serial.println("Camera capture failed");
     return;
   }
-
-  Serial.printf("Da chup anh: %u bytes\n", fb->len);
-
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFiClient client;
-    HTTPClient http;
-
-    http.setTimeout(15000);
-
-    if (http.begin(client, serverUrl)) {
-      http.addHeader("Content-Type", "image/jpeg");
-
-      // Gui du lieu JPEG len Flask
-      int httpCode = http.POST(fb->buf, fb->len);
-
-      Serial.printf("HTTP code: %d\n", httpCode);
-
-      if (httpCode > 0) {
-        String response = http.getString();
-        Serial.println("Phan hoi tu server:");
-        Serial.println(response);
-      } else {
-        Serial.printf("Loi HTTP: %s\n",
-                      http.errorToString(httpCode).c_str());
-      }
-
-      http.end();
-    } else {
-      Serial.println("Khong tao duoc ket noi HTTP!");
-    }
-  } else {
-    Serial.println("WiFi chua ket noi!");
+  struct FrameGuard {
+    camera_fb_t *frame;
+    ~FrameGuard() { esp_camera_fb_return(frame); }
+  } frameGuard{fb};
+  if (fb->format != PIXFORMAT_JPEG || fb->len == 0 || fb->len > 5U * 1024U * 1024U) {
+    Serial.println("Invalid JPEG frame size/format");
+    return;
   }
-
-  // Tra bo nho anh lai cho camera
-  esp_camera_fb_return(fb);
+  WiFiClient client;
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(5000);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  if (!http.begin(client, serverUrl)) {
+    Serial.println("Upload connection failed");
+    return;
+  }
+  http.addHeader("Content-Type", "image/jpeg");
+  http.addHeader("Authorization", String("Bearer ") + PBL4_UPLOAD_TOKEN);
+  int code = http.POST(fb->buf, fb->len);
+  Serial.printf("JPEG upload HTTP status: %d\n", code);
+  http.end();
 }
 
-
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
+  if (!cameraReady) {
+    delay(1000);
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastReconnectAttempt >= 10000) {
+      lastReconnectAttempt = millis();
+      WiFi.reconnect();
+    }
+    delay(100);
+    return;
+  }
+  if (!cameraServerStarted) {
+    startCameraServer();
+    cameraServerStarted = true;
+  }
   guiAnhLenServer();
   delay(10000);
 }

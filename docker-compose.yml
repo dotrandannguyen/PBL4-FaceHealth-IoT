@@ -4,13 +4,13 @@ services:
     container_name: pbl4_mariadb
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD in .env}
       MYSQL_DATABASE: DoAn_ChamCong_AI_MariaDB
       MYSQL_USER: pbl4_user
-      MYSQL_PASSWORD: pbl4_password
+      MYSQL_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
       TZ: Asia/Ho_Chi_Minh
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
       - ./DoAn_ChamCong_AI/migration/mariadb_schema.sql:/docker-entrypoint-initdb.d/00_schema.sql:ro
@@ -40,7 +40,8 @@ services:
       MARIADB_PORT: 3306
       MARIADB_DATABASE: DoAn_ChamCong_AI_MariaDB
       MARIADB_USER: pbl4_user
-      MARIADB_PASSWORD: pbl4_password
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      PBL4_INTERNAL_TOKEN: ${PBL4_INTERNAL_TOKEN:?Set PBL4_INTERNAL_TOKEN in .env}
       PYTHON_EXECUTABLE: /usr/bin/python3
       AI_SERVICE_URL: http://host.docker.internal:5001
       CAMERA_FRAME_URL: http://host.docker.internal:5001/internal/camera/frame

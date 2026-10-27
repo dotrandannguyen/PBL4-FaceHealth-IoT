@@ -40,11 +40,14 @@ class StatusFeatureExtractor:
     def __init__(self):
         self.face_mesh = mp_face_mesh.FaceMesh(
             static_image_mode=False, # Tối ưu cho chuỗi frame liên tiếp
-            max_num_faces=1,
+            max_num_faces=2,
             refine_landmarks=True,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
+
+    def close(self):
+        self.face_mesh.close()
 
     def extract_features(self, frame_bgr):
         """
@@ -54,7 +57,7 @@ class StatusFeatureExtractor:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(frame_rgb)
 
-        if not results.multi_face_landmarks:
+        if not results.multi_face_landmarks or len(results.multi_face_landmarks) != 1:
             return None
         
         # Chỉ lấy khuôn mặt đầu tiên
@@ -63,15 +66,24 @@ class StatusFeatureExtractor:
 
         # Chuyển landmark tỉ lệ (0-1) thành pixel thực tế
         pts = np.array([(lm.x * w, lm.y * h) for lm in landmarks])
+        if len(pts) < 468 or not np.isfinite(pts).all():
+            return None
 
         # 1. Tính EAR (Độ mở mắt)
         ear = self._calculate_ear(pts)
 
         # 2. Tính MAR (Độ mở miệng)
         mar = self._calculate_mar(pts)
+        if not np.isfinite([ear, mar]).all():
+            return None
 
         # 3. Tính Head Pose (Pitch, Yaw, Roll)
-        pitch, yaw, roll = self._calculate_head_pose(pts, w, h)
+        try:
+            pitch, yaw, roll = self._calculate_head_pose(pts, w, h)
+        except Exception:
+            return None
+        if not np.isfinite([pitch, yaw, roll]).all():
+            return None
 
         return {
             "ear": ear,
@@ -89,7 +101,7 @@ class StatusFeatureExtractor:
             v2 = np.linalg.norm(eye_pts[2] - eye_pts[4])
             # Tính khoảng cách ngang
             h = np.linalg.norm(eye_pts[0] - eye_pts[3])
-            return (v1 + v2) / (2.0 * h) if h > 0 else 0
+            return (v1 + v2) / (2.0 * h) if h > 0 else float('nan')
 
         left_eye = pts[LEFT_EYE_INDICES]
         right_eye = pts[RIGHT_EYE_INDICES]
@@ -100,7 +112,7 @@ class StatusFeatureExtractor:
         v = np.linalg.norm(pts[LIP_TOP] - pts[LIP_BOTTOM])
         # Chiều ngang mép môi
         h = np.linalg.norm(pts[LIP_LEFT] - pts[LIP_RIGHT])
-        return v / h if h > 0 else 0
+        return v / h if h > 0 else float('nan')
 
     def _calculate_head_pose(self, pts, w, h):
         # Lấy tọa độ 6 điểm mốc cho Head Pose
@@ -121,7 +133,7 @@ class StatusFeatureExtractor:
         )
 
         if not success:
-            return 0, 0, 0
+            return float('nan'), float('nan'), float('nan')
 
         # Chuyển vector xoay thành ma trận quay, sau đó tính góc Euler
         rmat, _ = cv2.Rodrigues(rotation_vec)

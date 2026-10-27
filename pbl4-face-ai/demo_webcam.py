@@ -17,6 +17,7 @@ sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, os.path.join(ROOT_DIR, "src"))
 
 import cv2
+from src.camera_source import open_camera
 import numpy as np
 
 try:
@@ -29,7 +30,7 @@ def main():
     print("Dang khoi tao InsightFace...")
     engine = FaceEngine()
 
-    cap = cv2.VideoCapture(0)
+    cap = open_camera(0)
     if not cap.isOpened():
         print("Khong mo duoc webcam!")
         return

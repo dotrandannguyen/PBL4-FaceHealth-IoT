@@ -6,6 +6,8 @@ Dùng cho cả đăng ký (registered/) và đánh giá (test/)
 import cv2
 import argparse
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rich.console import Console
 from rich.panel import Panel
 
@@ -42,7 +44,8 @@ def capture(
         border_style="cyan",
     ))
 
-    cap = cv2.VideoCapture(camera_id)
+    from src.camera_source import open_camera
+    cap = open_camera(camera_id)
     if not cap.isOpened():
         console.print(f"[red]❌ Không mở được camera {camera_id}![/]")
         return

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Database.php';
+require_once __DIR__ . '/../Service/FaceSample.php';
 
 final class FaceEmbeddingModel
 {
@@ -51,9 +52,11 @@ final class FaceEmbeddingModel
         $pdo = Database::getConnection();
         $pdo->beginTransaction();
         try {
+            $this->lockEmployee($pdo, $employeeId);
             $statement = $pdo->prepare('DELETE FROM FaceEmbedding WHERE MaNV = :employee_id');
             $statement->execute(['employee_id' => $employeeId]);
             $deleted = $statement->rowCount();
+            $pdo->prepare('UPDATE NhanVien SET AnhKhuonMat = NULL WHERE MaNV = :id')->execute(['id' => $employeeId]);
             $pdo->commit();
 
             return $deleted;
@@ -72,9 +75,14 @@ final class FaceEmbeddingModel
         $pdo = Database::getConnection();
         $pdo->beginTransaction();
         try {
+            $this->lockEmployee($pdo, $employeeId);
             $delete = $pdo->prepare('DELETE FROM FaceEmbedding WHERE MaNV = :employee_id');
             $delete->execute(['employee_id' => $employeeId]);
             $ids = $this->insertSamples($pdo, $employeeId, $samples);
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->buffer($samples[0]['image']);
+            $avatar = 'data:' . $mime . ';base64,' . base64_encode($samples[0]['image']);
+            $pdo->prepare('UPDATE NhanVien SET AnhKhuonMat = :avatar WHERE MaNV = :id')
+                ->execute(['avatar' => $avatar, 'id' => $employeeId]);
             $pdo->commit();
 
             return $ids;
@@ -83,6 +91,15 @@ final class FaceEmbeddingModel
                 $pdo->rollBack();
             }
             throw $exception;
+        }
+    }
+
+    private function lockEmployee(PDO $pdo, int $employeeId): void
+    {
+        $statement = $pdo->prepare('SELECT MaNV FROM NhanVien WHERE MaNV = :id FOR UPDATE');
+        $statement->execute(['id' => $employeeId]);
+        if ($statement->fetchColumn() === false) {
+            throw new InvalidArgumentException('Employee does not exist.');
         }
     }
 
@@ -103,8 +120,13 @@ final class FaceEmbeddingModel
                 || !is_string($image) || $image === '') {
                 throw new InvalidArgumentException('Each sample must include a 512D vector and an image.');
             }
+            FaceSample::vector($vector);
+            if ($index > 0) {
+                FaceSample::requireSameIdentity($samples[0]['vector'], $vector);
+            }
             $mime = (new finfo(FILEINFO_MIME_TYPE))->buffer($image);
-            if (!in_array($mime, ['image/jpeg', 'image/png'], true) || getimagesizefromstring($image) === false) {
+            $size = @getimagesizefromstring($image);
+            if (!in_array($mime, ['image/jpeg', 'image/png'], true) || $size === false || $size[0] * $size[1] > 16000000) {
                 throw new InvalidArgumentException('Sample image must be a valid JPEG or PNG.');
             }
             if (strlen($image) > 5 * 1024 * 1024) {

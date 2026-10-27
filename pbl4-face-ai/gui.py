@@ -1,50 +1,51 @@
-"""
-gui.py - Bảng Điều Khiển Hệ Thống Face AI - PBL4
-Quản lý tập trung:
-  - Lựa chọn nguồn Camera AI: ESP32-CAM (On-Demand MJPEG Stream) hoặc Webcam
-  - Xem trực tiếp luồng hình ảnh camera
-  - Đăng ký khuôn mặt 5 góc mặt
-  - Điểm danh và nhận diện trạng thái thể trạng thời gian thực
-  - Huấn luyện mô hình Random Forest (AI 2)
-  - Quản lý dịch vụ AI REST Service (Port 5001) và Web Quản trị
-"""
-
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import subprocess
 import os
-import sys
+from src.runtime_config import load_environment
+
+load_environment()
 import pickle
 import threading
-import json
-import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
-# Tự động nạp cấu hình môi trường (.env)
-from src.runtime_config import load_environment
-load_environment()
-
-BASE_DIR = Path(__file__).resolve().parent
-os.chdir(str(BASE_DIR))
-DB_PATH = BASE_DIR / "data" / "embeddings.pkl"
-TRAIN_LOG_DIR = BASE_DIR.parent / ".pbl4-run" / "training"
-
-# Đường dẫn Python và môi trường (Ưu tiên .venv Python 3.11 có đầy đủ model AI)
-VENV_PYTHON = BASE_DIR / ".venv" / "Scripts" / "python.exe"
-PYTHON_CMD = str(VENV_PYTHON) if VENV_PYTHON.exists() else (sys.executable or "python")
+import sys
+# Đường dẫn Python và môi trường
+PYTHON_CMD = sys.executable if sys.executable else r".\.venv\Scripts\python.exe"
 ENV = os.environ.copy()
 ENV["PYTHONIOENCODING"] = "utf-8"
 
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "data" / "embeddings.pkl"
+TRAIN_LOG_DIR = BASE_DIR.parent / '.pbl4-run' / 'training'
+
+
+def save_training_log(stage, result):
+    """Keep captured subprocess diagnostics instead of discarding their errors."""
+    def decode(value):
+        return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value or '')
+    output = decode(getattr(result, 'stdout', b''))
+    error = decode(getattr(result, 'stderr', b''))
+    detail = next((line.strip() for line in reversed((error or output).splitlines()) if line.strip()),
+                  'Không có chi tiết từ tiến trình.')
+    try:
+        TRAIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
+        path = TRAIN_LOG_DIR / f'{stage}-{stamp}-{uuid4().hex[:8]}.log'
+        with path.open('x', encoding='utf-8') as stream:
+            stream.write(f'Exit code: {result.returncode}\n\nSTDOUT\n{output}\nSTDERR\n{error}')
+        location = str(path)
+    except OSError:
+        location = 'Không ghi được log chẩn đoán.'
+    return detail[:500], location
 
 def run_cmd(cmd_list, title=""):
     try:
-        creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
-        subprocess.Popen(cmd_list, env=ENV, cwd=str(BASE_DIR), creationflags=creationflags)
+        subprocess.Popen(cmd_list, env=ENV, cwd=BASE_DIR)
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể chạy lệnh {title}:\n{str(e)}")
-
 
 def get_registered_users():
     if not DB_PATH.exists():
@@ -53,137 +54,84 @@ def get_registered_users():
         with open(DB_PATH, "rb") as f:
             db = pickle.load(f)
         return [{"id": k, "name": v["name"]} for k, v in db.items()]
-    except Exception:
+    except:
         return []
-
 
 class FaceAIDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🤖 Bảng Điều Khiển Hệ Thống Face AI - PBL4")
-        self.geometry("840x720")
+        self.geometry("780x640")
         self.resizable(False, False)
         self.ai_service_proc = None
-        self.camera_source = tk.StringVar(value="esp32")
+        from src.ui_worker import UiWorker
+        from src.desktop_enrollment import DesktopEnrollment
+        self.io = UiWorker(self)
+        from src.process_runner import ProcessRunner
+        self.training_io = UiWorker(self)
+        self.training_runner = ProcessRunner()
+        self.train_busy = False
+        self.store = DesktopEnrollment()
+        from src.desktop_lifecycle import CameraModuleLauncher
+        self.camera_modules = CameraModuleLauncher(
+            self, PYTHON_CMD, BASE_DIR, ENV,
+            lambda title, log: messagebox.showerror(title, 'Không chạy được cửa sổ camera. Xem log:\n' + log))
         self._closing_dashboard = False
+        self._checking_service = False
         self._service_timer = None
-
-        # Cài đặt Theme
+        
+        # Cài đặt Theme cho đẹp hơn
         style = ttk.Style(self)
-        style.theme_use("clam")
+        style.theme_use('clam')
         style.configure("TLabel", font=("Segoe UI", 10))
         style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground="#2c3e50")
         style.configure("Action.TButton", font=("Segoe UI", 10, "bold"), padding=8)
         style.configure("TLabelframe.Label", font=("Segoe UI", 10, "bold"), foreground="#2980b9")
-
+        
         # Chia layout chính thành 2 cột (Trái: Control, Phải: Database)
         self.left_frame = tk.Frame(self, padx=10, pady=10)
         self.left_frame.pack(side="left", fill="both", expand=True)
-
+        
         self.right_frame = tk.Frame(self, padx=10, pady=10)
         self.right_frame.pack(side="right", fill="both", expand=True)
 
         self.setup_left_panel()
         self.setup_right_panel()
         self.refresh_user_list()
-        self.after(500, self._check_services_status)
+        self._service_timer = self.after(500, self._check_ai_service_status)
 
     def setup_left_panel(self):
-        # --- Phần Nguồn Camera ---
-        frame_cam = ttk.LabelFrame(self.left_frame, text=" 📹 Nguồn Camera AI ", padding=10)
-        frame_cam.pack(fill="x", pady=6)
-
-        rb_esp32 = ttk.Radiobutton(
-            frame_cam,
-            text="📡 ESP32-CAM (Node 1 - WiFi)",
-            variable=self.camera_source,
-            value="esp32",
-            command=self._update_cam_labels,
-        )
-        rb_esp32.grid(row=0, column=0, sticky="w", padx=5)
-
-        rb_webcam = ttk.Radiobutton(
-            frame_cam,
-            text="📷 Webcam Máy tính",
-            variable=self.camera_source,
-            value="0",
-            command=self._update_cam_labels,
-        )
-        rb_webcam.grid(row=0, column=1, sticky="w", padx=5)
-
-        self.lbl_esp_status = ttk.Label(
-            frame_cam,
-            text="⚪ ESP32-CAM (mDNS: esp32cam.local): Đang kiểm tra...",
-            font=("Segoe UI", 9),
-        )
-        self.lbl_esp_status.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 4))
-
-        self.btn_preview = ttk.Button(
-            frame_cam,
-            text="👁️ Xem Trực Tiếp Stream (On-Demand)",
-            command=self.handle_preview_cam,
-        )
-        self.btn_preview.grid(row=2, column=0, columnspan=2, sticky="we", pady=3)
-
         # --- Phần Đăng ký ---
-        frame_reg = ttk.LabelFrame(self.left_frame, text=" 🎓 Cập nhật Sinh viên (AI 1) ", padding=12)
-        frame_reg.pack(fill="x", pady=6)
+        frame_reg = ttk.LabelFrame(self.left_frame, text=" 📸 Đăng ký khuôn mặt nhân viên ", padding=15)
+        frame_reg.pack(fill="x", pady=10)
 
-        ttk.Label(frame_reg, text="Mã SV:").grid(row=0, column=0, sticky="w", pady=4)
-        self.entry_id = ttk.Entry(frame_reg, width=25, font=("Segoe UI", 10))
-        self.entry_id.grid(row=0, column=1, padx=10, pady=4)
-        self.entry_id.insert(0, "SV001")
-
-        ttk.Label(frame_reg, text="Tên SV:").grid(row=1, column=0, sticky="w", pady=4)
-        self.entry_name = ttk.Entry(frame_reg, width=25, font=("Segoe UI", 10))
-        self.entry_name.grid(row=1, column=1, padx=10, pady=4)
-        self.entry_name.insert(0, "Nguyen Van A")
-
-        self.btn_reg = ttk.Button(
-            frame_reg,
-            text="📸 Bắt đầu Đăng ký (ESP32-CAM)",
-            style="Action.TButton",
-            command=self.handle_register,
-        )
-        self.btn_reg.grid(row=2, column=0, columnspan=2, pady=10, sticky="we")
+        ttk.Label(frame_reg, text="Chọn nhân viên trong hệ thống, chụp 5 góc mặt.\nẢnh được lưu để chấm công ngay khi đăng ký xong.",
+                  wraplength=300).pack(fill="x", pady=(0, 10))
+        ttk.Button(frame_reg, text="📸 Đăng ký khuôn mặt", style="Action.TButton",
+                   command=self.handle_register).pack(fill="x")
 
         # --- Phần Điểm danh ---
-        frame_att = ttk.LabelFrame(self.left_frame, text=" 🕒 Chấm công Điểm danh ", padding=12)
-        frame_att.pack(fill="x", pady=6)
+        frame_att = ttk.LabelFrame(self.left_frame, text=" 🕒 Chấm công Điểm danh ", padding=15)
+        frame_att.pack(fill="x", pady=10)
 
-        self.btn_att = ttk.Button(
-            frame_att,
-            text="✅ Mở Chấm công (ESP32-CAM)",
-            style="Action.TButton",
-            command=self.handle_attendance,
-        )
-        self.btn_att.pack(fill="x", pady=4)
+        btn_att = ttk.Button(frame_att, text="✅ Mở Webcam Chấm công + AI 2", style="Action.TButton", command=self.handle_attendance)
+        btn_att.pack(fill="x", pady=5)
 
-        # --- Phần Trạng thái AI 2 ---
-        frame_status = ttk.LabelFrame(self.left_frame, text=" 🧠 Nhận diện Trạng thái (AI 2) ", padding=10)
-        frame_status.pack(fill="x", pady=5)
+        # --- Phần Trạng thái ---
+        frame_status = ttk.LabelFrame(self.left_frame, text=" 🧠 Công cụ AI 2 (nâng cao) ", padding=12)
+        frame_status.pack(fill="x", pady=6)
 
-        btn_train = ttk.Button(
-            frame_status,
-            text="🔄 Thu thập & Tự động Train AI",
-            command=self.handle_train_status,
-        )
-        btn_train.pack(fill="x", pady=2)
+        btn_train = ttk.Button(frame_status, text="🔄 Thu thập & Tự động Train AI", command=self.handle_train_status)
+        btn_train.pack(fill="x", pady=3)
 
-        self.btn_test = ttk.Button(
-            frame_status,
-            text="🧪 Test Trạng thái (ESP32-CAM)",
-            command=self.handle_test_status,
-        )
-        self.btn_test.pack(fill="x", pady=2)
+        self.btn_test_status = ttk.Button(frame_status, text="Xem thể trạng trực tiếp", command=self.handle_test_status)
+        self.btn_test_status.pack(fill="x", pady=3)
 
         # --- Phần AI REST Service & Web Quản lý ---
-        frame_web = ttk.LabelFrame(self.left_frame, text=" 🌐 AI Service & Web Quản trị ", padding=10)
-        frame_web.pack(fill="x", pady=5)
+        frame_web = ttk.LabelFrame(self.left_frame, text=" 🌐 AI Service & Web Quản trị ", padding=12)
+        frame_web.pack(fill="x", pady=6)
 
-        self.lbl_service_status = ttk.Label(
-            frame_web, text="⚪ AI Service: Đang kiểm tra...", font=("Segoe UI", 9)
-        )
+        self.lbl_service_status = ttk.Label(frame_web, text="⚪ AI Service: Đang kiểm tra...", font=("Segoe UI", 9))
         self.lbl_service_status.pack(fill="x", pady=2)
 
         self.btn_service = ttk.Button(
@@ -191,29 +139,18 @@ class FaceAIDashboard(tk.Tk):
             text="🚀 Bật AI REST Service (Port 5001)",
             command=self.handle_toggle_ai_service,
         )
-        self.btn_service.pack(fill="x", pady=2)
+        self.btn_service.pack(fill="x", pady=3)
 
         btn_open_web = ttk.Button(
             frame_web,
             text="🌍 Mở Web Quản trị (localhost:8080)",
             command=self.handle_open_web,
         )
-        btn_open_web.pack(fill="x", pady=2)
-        self._update_cam_labels()
-
-    def _update_cam_labels(self):
-        source = self.camera_source.get()
-        tag = "ESP32-CAM" if source == "esp32" else "Webcam"
-        if hasattr(self, "btn_reg"):
-            self.btn_reg.config(text=f"📸 Bắt đầu Đăng ký ({tag})")
-        if hasattr(self, "btn_att"):
-            self.btn_att.config(text=f"✅ Mở Chấm công ({tag})")
-        if hasattr(self, "btn_test"):
-            self.btn_test.config(text=f"🧪 Test Trạng thái ({tag})")
+        btn_open_web.pack(fill="x", pady=3)
 
     def setup_right_panel(self):
         # --- Danh sách User ---
-        frame_db = ttk.LabelFrame(self.right_frame, text=" 📋 Danh sách Sinh viên trong Database ", padding=15)
+        frame_db = ttk.LabelFrame(self.right_frame, text=" 📋 Nhân viên đã có khuôn mặt ", padding=15)
         frame_db.pack(fill="both", expand=True, pady=10)
 
         # Thanh cuộn và Treeview
@@ -222,7 +159,7 @@ class FaceAIDashboard(tk.Tk):
 
         columns = ("id", "name")
         self.tree = ttk.Treeview(frame_db, columns=columns, show="headings", yscrollcommand=scroll.set, height=18)
-        self.tree.heading("id", text="Mã SV")
+        self.tree.heading("id", text="Mã nhân viên")
         self.tree.heading("name", text="Họ & Tên")
         self.tree.column("id", width=90, anchor="center")
         self.tree.column("name", width=180)
@@ -232,178 +169,165 @@ class FaceAIDashboard(tk.Tk):
         # Nút tiện ích
         frame_utils = tk.Frame(self.right_frame)
         frame_utils.pack(fill="x", pady=5)
-
+        
         btn_refresh = ttk.Button(frame_utils, text="🔄 Làm mới danh sách", command=self.refresh_user_list)
         btn_refresh.pack(side="left", padx=5, expand=True, fill="x")
 
-        ttk.Button(
-            self.right_frame, text="🌍 Mở Quản lý trên Web", command=self.handle_open_web
-        ).pack(fill="x", padx=5, pady=2)
+        ttk.Button(self.right_frame, text='Quản lý nhân viên trên Web', command=self.handle_open_web).pack(fill='x', padx=5)
 
     def refresh_user_list(self):
+        def done(result):
+            self._render_user_list()
+        self.io.submit(self.store.refresh, done,
+                       lambda error: messagebox.showerror('Đồng bộ', 'Chưa tải được gallery từ DB; dữ liệu cũ được giữ nguyên.'))
+
+    def _render_user_list(self):
+        # Xóa dữ liệu cũ trên bảng
         for item in self.tree.get_children():
             self.tree.delete(item)
+            
         users = get_registered_users()
         for u in users:
             self.tree.insert("", "end", values=(u["id"], u["name"]))
 
-    def handle_preview_cam(self):
-        cam = self.camera_source.get()
-        tag = "ESP32-CAM" if cam == "esp32" else "Webcam"
-        script = str(BASE_DIR / "src" / "camera_preview.py")
-        run_cmd([PYTHON_CMD, script, "--camera", cam], f"Xem Trực Tiếp ({tag})")
-
     def handle_register(self):
-        cam = self.camera_source.get()
-        sid = self.entry_id.get().strip()
-        sname = self.entry_name.get().strip()
-        script = str(BASE_DIR / "gui_register.py")
-        cmd = [PYTHON_CMD, script, "--camera", cam]
-        if sid:
-            cmd += ["--id", sid]
-        if sname:
-            cmd += ["--name", sname]
-        tag = "ESP32-CAM" if cam == "esp32" else "Webcam"
-        run_cmd(cmd, f"Đăng ký Khuôn mặt ({tag})")
+        self.camera_modules.launch('gui_register.py', 'Đăng ký khuôn mặt')
 
     def handle_attendance(self):
-        cam = self.camera_source.get()
-        tag = "ESP32-CAM" if cam == "esp32" else "Webcam"
-        script = str(BASE_DIR / "demo_unified_iot.py")
-        run_cmd([PYTHON_CMD, script, "--camera", cam], f"Chấm công ({tag})")
+        self.camera_modules.launch('gui_attendance.py', 'Chấm công và trạng thái')
 
     def handle_train_status(self):
-        msg = (
-            "Hướng dẫn thu thập dữ liệu 3 cấp độ mệt mỏi (AI 2):\n"
-            "- Cửa sổ thu hình sẽ hiện ra kèm chỉ số EAR trực tiếp.\n"
-            "- Bấm các phím số tương ứng để ghi lại chuỗi 3 frames:\n"
-            "  [1] Normal    : Bình thường / Tỉnh táo\n"
-            "  [2] Fatigue   : Mệt mỏi / Lờ đờ\n"
-            "  [3] Exhausted : Kiệt sức / Sụp mí\n"
-            "- Bấm [Q] để Lưu dữ liệu và Thoát.\n\n"
-            "Hệ thống sẽ TỰ ĐỘNG TRAIN Random Forest ngay sau đó.\n"
-            "Bạn có muốn bắt đầu?"
-        )
-        if messagebox.askyesno("Thu thập & Train AI", msg):
-            collect_script = str(BASE_DIR / "scripts" / "collect_status.py")
-            train_script = str(BASE_DIR / "src" / "train_rf.py")
-            creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
-
-            def worker():
-                subprocess.run([PYTHON_CMD, collect_script], env=ENV, cwd=str(BASE_DIR), creationflags=creationflags)
-                subprocess.run([PYTHON_CMD, train_script], env=ENV, cwd=str(BASE_DIR), creationflags=creationflags)
-                messagebox.showinfo("Thành công", "Đã huấn luyện xong mô hình AI Trạng thái khuôn mặt!")
-
-            threading.Thread(target=worker, daemon=True).start()
+        if self.train_busy:
+            return
+        subject = simpledialog.askstring('Người tham gia', 'Nhập mã người ổn định (mã giả danh, không dùng anonymous):', parent=self)
+        if subject is None:
+            return
+        from src.status_dataset import subject_id
+        try:
+            subject = subject_id(subject.strip())
+        except ValueError as error:
+            messagebox.showerror('Mã người', str(error))
+            return
+        if not messagebox.askyesno('Thu thập và train',
+            'Phím 1/2/3 chọn nhãn thủ công Normal/Fatigue/Exhausted; mỗi lần ghi ba ảnh cách nhau 300 ms. '
+            'Q dừng thu thập. Chỉ train khi có mẫu mới và dữ liệu đủ người độc lập, đủ ba nhãn. '
+            'EAR không tự quyết định nhãn. Bắt đầu?'):
+            return
+        self.train_busy = True
+        def work():
+            collected = self.training_runner.run([PYTHON_CMD, 'scripts/collect_status.py', '--subject', subject], env=ENV, cwd=BASE_DIR)
+            detail, log = save_training_log('collect', collected)
+            if collected.returncode == 2:
+                return ('info', 'Chưa lưu được chuỗi mẫu mới. Trong cửa sổ camera, nhấn 1/2/3 một lần, '
+                        'giữ mặt chính diện tới khi số saved tăng, rồi nhấn Q để kết thúc. '
+                        'Model hiện có được giữ nguyên.\n\nLog: ' + log)
+            if collected.returncode != 0:
+                return ('error', 'Bước thu dữ liệu gặp lỗi; chưa train. Mẫu đã lưu và model cũ được giữ nguyên.\n\n'
+                        + detail + '\n\nLog: ' + log)
+            trained = self.training_runner.run([PYTHON_CMD, 'src/train_rf.py'], env=ENV, cwd=BASE_DIR)
+            detail, log = save_training_log('train', trained)
+            if trained.returncode != 0:
+                return ('info', 'Mẫu thu thập đã lưu tại data/status_dataset_v2.csv; chưa train được. '
+                        'Model cũ được giữ nguyên.\n\n' + detail + '\n\nLog: ' + log)
+            return ('info', 'Đã train và lưu model cùng metadata; kết quả đánh giá thuộc split của dataset này.\n\nLog: ' + log)
+        def done(result):
+            self.train_busy = False
+            kind, message = result
+            (messagebox.showerror if kind == 'error' else messagebox.showinfo)('Thu thập/train', message)
+        def failed(error):
+            self.train_busy = False
+            messagebox.showerror('Thu thập/train', 'Không chạy được tiến trình. Kiểm tra Python/dependency; dữ liệu đã lưu được giữ nguyên.')
+        self.training_io.submit(work, done, failed)
 
     def handle_test_status(self):
-        cam = self.camera_source.get()
-        tag = "ESP32-CAM" if cam == "esp32" else "Webcam"
-        script = str(BASE_DIR / "src" / "predict_status.py")
-        run_cmd([PYTHON_CMD, script, "--camera", cam], f"Test Trạng thái ({tag})")
+        self.camera_modules.launch('gui_status.py', 'Test trạng thái')
+
+    def handle_clear_db(self):
+        try:
+            identities = {user['id']: self.store.revision(user['id']) for user in get_registered_users()}
+        except Exception:
+            messagebox.showerror('Đồng bộ', 'Làm mới gallery từ DB trước khi xóa.')
+            return
+        if not identities or not messagebox.askyesno('Xác nhận', f'Xóa mẫu của {len(identities)} nhân viên trong danh sách? Giữ hồ sơ và lịch sử.'):
+            return
+        def work():
+            for sid, revision in identities.items():
+                self.store.stage_delete(sid, revision)
+            return self.store.retry()
+        def done(result):
+            self._render_user_list()
+            messagebox.showinfo('Đồng bộ', f"Đã hoàn tất {result['completed']}; còn {result['pending']} batch chờ. " + '; '.join(result['errors']))
+        self.io.submit(work, done, lambda error: messagebox.showerror('Đồng bộ', 'Chưa xóa xong; batch chờ và gallery được giữ để kiểm tra/thử lại.'))
+
+    def handle_retry_sync(self):
+        def done(result):
+            self._render_user_list()
+            messagebox.showinfo('Đồng bộ', f"Đã hoàn tất {result['completed']}; còn {result['pending']} batch chờ. " + '; '.join(result['errors']))
+        self.io.submit(self.store.retry, done, lambda error: messagebox.showerror('Đồng bộ', 'Không đọc được batch chờ; giữ nguyên để kiểm tra.'))
 
     def handle_toggle_ai_service(self):
         if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
             self.ai_service_proc.terminate()
-            self.ai_service_proc = None
-            messagebox.showinfo("AI Service", "Đã dừng AI Service.")
-            self._check_services_status()
             return
+        def checked(health):
+            if health is not None:
+                messagebox.showinfo('AI Service', 'Service đang chạy ở process khác; chỉ process do cửa sổ này tạo mới được dừng.')
+                return
+            try:
+                self.ai_service_proc = subprocess.Popen([PYTHON_CMD, 'ai_web_service.py'], env=ENV, cwd=BASE_DIR)
+                messagebox.showinfo('AI Service', 'Đã bắt đầu tải service. Theo dõi trạng thái model trước khi đăng ký.')
+            except Exception:
+                messagebox.showerror('AI Service', 'Không khởi động được service; kiểm tra Python/môi trường.')
+        self.io.submit(self._read_service_health, checked, lambda error: checked(None))
 
+    @staticmethod
+    def _read_service_health():
+        import requests
         try:
-            creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
-            ai_script = str(BASE_DIR / "ai_web_service.py")
-            self.ai_service_proc = subprocess.Popen(
-                [PYTHON_CMD, ai_script],
-                env=ENV,
-                cwd=str(BASE_DIR),
-                creationflags=creationflags,
-            )
-            messagebox.showinfo("AI Service", "Đã khởi động AI REST Service trên cổng 5001!")
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể bật AI Service:\n{str(e)}")
-
-        self._check_services_status()
+            url = os.environ.get('PBL4_AI_URL', os.environ.get('AI_SERVICE_URL', 'http://127.0.0.1:5001')).rstrip('/')
+            response = requests.get(url + '/health', timeout=.6, allow_redirects=False)
+            health = response.json()
+            return health if response.status_code == 200 and isinstance(health, dict) and health.get('service') == 'PBL4 Face AI Service' else None
+        except Exception:
+            return None
 
     def handle_open_web(self):
         import webbrowser
         webbrowser.open("http://localhost:8080")
 
-    def _check_services_status(self):
-        def _check():
-            # 1. Kiểm tra AI Service (Port 5001)
-            ai_running = False
-            try:
-                with urllib.request.urlopen("http://127.0.0.1:5001/health", timeout=0.6) as r:
-                    if r.status == 200:
-                        ai_running = True
-            except Exception:
-                ai_running = False
-
-            # 2. Kiểm tra ESP32 Camera trực tiếp qua mDNS (esp32cam.local:81)
-            esp_status = "stopped"
-            esp_info = ""
-            try:
-                with urllib.request.urlopen("http://esp32cam.local:81/status", timeout=0.8) as r:
-                    if r.status == 200:
-                        data = json.loads(r.read().decode())
-                        is_stream = data.get("streaming", False)
-                        esp_status = "streaming" if is_stream else "standby"
-                        esp_info = "esp32cam.local:81"
-            except Exception:
-                esp_status = "stopped"
-
-            def _update_ui():
-                # Cập nhật nhãn AI Service
-                if ai_running:
-                    self.lbl_service_status.config(
-                        text="🟢 AI Service: Đang chạy (Port 5001)",
-                        foreground="#27ae60",
-                    )
-                    self.btn_service.config(text="🛑 Dừng AI REST Service")
-                else:
-                    self.lbl_service_status.config(
-                        text="⚪ AI Service: Đã dừng",
-                        foreground="#7f8c8d",
-                    )
-                    self.btn_service.config(text="🚀 Bật AI REST Service (Port 5001)")
-
-                # Cập nhật nhãn ESP32 Camera
-                if esp_status == "streaming":
-                    self.lbl_esp_status.config(
-                        text=f"🟢 ESP32-CAM: Đang phát Stream Live ({esp_info})",
-                        foreground="#27ae60",
-                    )
-                elif esp_status == "standby":
-                    self.lbl_esp_status.config(
-                        text=f"🟢 ESP32-CAM (mDNS): Online - Chế độ Chờ ({esp_info})",
-                        foreground="#2980b9",
-                    )
-                else:
-                    self.lbl_esp_status.config(
-                        text="⚪ ESP32-CAM: Ngoại tuyến (Đang tìm esp32cam.local:81...)",
-                        foreground="#7f8c8d",
-                    )
-
-                if not self._closing_dashboard:
-                    self._service_timer = self.after(3000, self._check_services_status)
-
-            self.after(0, _update_ui)
-
-        threading.Thread(target=_check, daemon=True).start()
+    def _check_ai_service_status(self):
+        if self._checking_service:
+            return
+        self._checking_service = True
+        def update(health):
+            self._checking_service = False
+            ready = health is not None and health.get('model_ready') is True
+            text = 'AI Service: sẵn sàng' if ready else ('AI Service: model chưa sẵn sàng' if health else 'AI Service: chưa kết nối')
+            self.lbl_service_status.config(text=text, foreground='#27ae60' if ready else '#7f8c8d')
+            self.btn_service.config(text='Dừng service của cửa sổ này' if self.ai_service_proc is not None and self.ai_service_proc.poll() is None else 'Bật AI REST Service')
+            self._service_timer = self.after(3000, self._check_ai_service_status)
+        self.io.submit(self._read_service_health, update, lambda error: update(None))
 
     def destroy(self):
+        if self._closing_dashboard:
+            return
         self._closing_dashboard = True
+        self.camera_modules.close(self._finish_destroy)
+
+    def _finish_destroy(self):
         if self._service_timer:
             self.after_cancel(self._service_timer)
+        self.io.close()
+        self.training_runner.close()
+        self.training_io.close()
         if self.ai_service_proc is not None and self.ai_service_proc.poll() is None:
             self.ai_service_proc.terminate()
             try:
                 self.ai_service_proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.ai_service_proc.kill()
+                self.ai_service_proc.wait(timeout=2)
         super().destroy()
-
 
 if __name__ == "__main__":
     app = FaceAIDashboard()

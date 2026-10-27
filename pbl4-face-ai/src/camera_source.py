@@ -291,38 +291,22 @@ class RelayCamera:
         self.session.close()
 
 
-def open_camera(camera_id: Union[int, str] = 0):
-    """
-    Hàm Factory thống nhất để khởi tạo nguồn Camera trong toàn bộ dự án.
-    Tự động hỗ trợ:
-      - 'esp32' hoặc URL stream -> CameraSource (ESP32-CAM MJPEG Stream)
-      - mode 'local' hoặc index số -> CameraSource (Webcam cục bộ)
-      - mode 'relay' -> RelayCamera (đọc từ AI Service endpoint)
-    """
+def open_camera(camera_id=0):
     load_environment()
-    mode = os.environ.get("PBL4_CAMERA_MODE", "auto")
-
-    # 1. Nếu chỉ định cụ thể ESP32 hoặc mode được đặt là esp32
+    mode = os.environ.get("PBL4_CAMERA_MODE", "relay")
+    if mode not in ("auto", "relay", "local", "esp32"):
+        raise ValueError("PBL4_CAMERA_MODE must be auto, relay, local or esp32")
     if str(camera_id).lower() == "esp32" or mode == "esp32":
         return CameraSource(source="esp32", width=1280, height=720)
-
-    # 2. Nếu là URL stream trực tiếp
     if isinstance(camera_id, str) and (camera_id.startswith("http://") or camera_id.startswith("https://")):
         return CameraSource(source=camera_id, width=1280, height=720)
-
-    # 3. Nếu là chế độ Local hoặc chọn webcam theo index
-    if mode == "local" or str(camera_id).isdigit():
-        idx = int(camera_id) if str(camera_id).isdigit() else 0
-        return CameraSource(source=idx, width=1280, height=720)
-
-    # 4. Chế độ Relay qua AI Service
-    if mode == "relay":
-        url = os.environ.get("PBL4_AI_URL", os.environ.get("AI_SERVICE_URL", "http://127.0.0.1:5001")).rstrip("/")
-        token = os.environ.get("PBL4_INTERNAL_TOKEN", "")
-        return RelayCamera(url + "/internal/camera/frame", token)
-
-    # 5. Mặc định: Trả về CameraSource cho camera_id tương ứng
-    return CameraSource(source=camera_id, width=1280, height=720)
+    if mode == "local":
+        import cv2
+        return cv2.VideoCapture(camera_id)
+    if camera_id != 0:
+        raise ValueError("Set PBL4_CAMERA_MODE=local to select a local device")
+    url = os.environ.get("PBL4_AI_URL", os.environ.get("AI_SERVICE_URL", "http://127.0.0.1:5001")).rstrip("/")
+    return RelayCamera(url + "/internal/camera/frame", os.environ.get("PBL4_INTERNAL_TOKEN", ""))
 
 
 class FramePump:

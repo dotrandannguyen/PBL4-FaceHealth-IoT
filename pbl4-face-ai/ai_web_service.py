@@ -108,13 +108,20 @@ def get_camera() -> CameraSource:
         if _cap is None or not _cap.isOpened():
             if _cap is not None:
                 _cap.release()
-            cam_source = os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "esp32"))
-            print(f">> [AI Service] Đang mở Camera ({cam_source})...")
+            cam_source = os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
             if cam_source == "esp32":
+                print(">> [AI Service] Đang mở Camera ESP32...")
                 _cap = CameraSource(source="esp32", width=640, height=480)
             else:
-                idx = int(os.environ.get("PBL4_CAMERA_ID", "0"))
-                _cap = CameraSource(source=idx, width=640, height=480)
+                print(">> [AI Service] Đang mở webcam nội bộ theo cấu hình...")
+                index = int(os.environ.get("PBL4_CAMERA_ID", "0"))
+                backend = os.environ.get("PBL4_CAMERA_BACKEND", "dshow" if sys.platform == "win32" else "auto")
+                api = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF, "auto": cv2.CAP_ANY}.get(backend)
+                if api is None:
+                    raise ValueError("Invalid camera backend")
+                _cap = cv2.VideoCapture(index, api)
+                _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         _camera_last_used = time.monotonic()
         _arm_camera_idle_timer()
         return _cap

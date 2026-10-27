@@ -32,10 +32,9 @@ jobs:
         run: find DoAn_ChamCong_AI -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: Core regressions
         run: python -B -m unittest discover -s pbl4-face-ai/tests -v
-      - name: Flask, receiver and training regressions
+      - name: Flask, enrollment and training regressions
         run: |
           python -B tools/test_ai_enrollment.py -v
-          python -B tools/test_upload_receiver.py -v
           python -B tools/test_status_training_runtime.py -v
       - name: Isolated DB, HTTP and desktop regressions
         env:

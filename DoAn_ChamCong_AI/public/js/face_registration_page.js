@@ -75,6 +75,19 @@
     const poseList = root.querySelector('[data-face-pose-list]');
     const result = document.querySelector('[data-face-result]');
     const deviceButtons = document.querySelectorAll('[data-camera-device]');
+    const toggleFitBtn = document.getElementById('toggle-camera-fit-btn');
+
+    if (toggleFitBtn && camera) {
+        toggleFitBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isContain = camera.classList.toggle('is-contain');
+            toggleFitBtn.textContent = isContain ? '🔲 Toàn khung' : '⛶ Lấp đầy';
+            toggleFitBtn.title = isContain
+                ? 'Đang ở chế độ Toàn khung (Contain). Bấm để chuyển sang Lấp đầy (Cover).'
+                : 'Đang ở chế độ Lấp đầy (Cover). Bấm để chuyển sang Toàn khung (Contain).';
+        });
+    }
 
     const poses = [
         { key: 'frontal', label: 'Chính diện', guide: 'Nhìn thẳng vào tâm camera, giữ nét mặt tự nhiên.' },

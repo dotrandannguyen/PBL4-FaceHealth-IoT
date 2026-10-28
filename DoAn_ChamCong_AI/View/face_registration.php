@@ -332,6 +332,18 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
         </div>
     </div>
 
+    <?php if (!$aiReady): ?>
+        <div class="notice notice--warning" style="margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+            <div>
+                <strong>⚠️ AI Service chưa được kết nối (Cổng 5001):</strong>
+                <div style="font-size: 13px; margin-top: 3px; color: #713f12;">
+                    Để mở Camera và nhận diện 5 góc khuôn mặt, vui lòng chạy file <code>run_ai_service.bat</code> trong thư mục dự án rồi tải lại trang.
+                </div>
+            </div>
+            <a class="button button--secondary button--small" href="javascript:location.reload()">🔄 Thử lại kết nối</a>
+        </div>
+    <?php endif; ?>
+
     <!-- Bố cục 2 cột: Cột trái Studio Quét Mặt Rộng Lớn | Cột phải Danh bạ & Mẫu lưu -->
     <div class="face-reg-layout">
         <!-- ════════ CỘT TRÁI: STUDIO THU THẬP KHUÔN MẶT ════════ -->
@@ -410,7 +422,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                 </div>
 
                 <!-- 2. Khối Hero Camera Viewport Lớn & Khung ngắm Viewfinder -->
-                <div class="face-enrollment-root" data-face-enrollment data-employee-id="<?= $selectedId ?>" data-csrf="<?= $h($csrfToken) ?>" data-face-count="<?= $faceCount ?>" data-camera-source="<?= $h($cameraSource) ?>">
+                <div class="face-enrollment-root" data-face-enrollment data-employee-id="<?= $selectedId ?>" data-csrf="<?= $h($csrfToken) ?>" data-face-count="<?= $faceCount ?>" data-camera-source="<?= $h($cameraSource) ?>" data-ai-ready="<?= $aiReady ? '1' : '0' ?>">
                     <div class="face-hero-viewport" data-face-viewport>
                         <!-- Ảnh stream Camera -->
                         <img class="face-hero-camera-img" data-face-camera alt="Khung hình camera đăng ký khuôn mặt" hidden>

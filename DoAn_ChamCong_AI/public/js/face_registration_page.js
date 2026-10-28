@@ -342,6 +342,11 @@
     // ── Nút Bắt đầu đăng ký ───────────────────────────────────────────────
     if (startButton) {
         startButton.addEventListener('click', async () => {
+            if (root.dataset.aiReady === '0') {
+                showResult('⚠️ AI Service chưa được kết nối trên cổng 5001! Vui lòng chạy file "run_ai_service.bat" trong thư mục dự án rồi tải lại trang.', 'error');
+                return;
+            }
+
             startButton.disabled = true;
             if (deleteButton) deleteButton.disabled = true;
             if (result) result.hidden = true;
@@ -357,7 +362,7 @@
             try {
                 const { response, payload } = await post('face_enrollment_start');
                 if (!response.ok || !payload.success) {
-                    throw new Error(payload.message || 'Không thể khởi tạo phiên đăng ký.');
+                    throw new Error(payload.message || 'Không thể khởi tạo phiên đăng ký. Vui lòng kiểm tra AI Service trên cổng 5001.');
                 }
                 running = true;
                 setCamera(true);
@@ -365,7 +370,8 @@
                 if (reticleHint) reticleHint.textContent = poses[0].guide;
                 poseTimer = setInterval(pollPose, 550);
             } catch (error) {
-                showResult(error.message, 'error');
+                const errorMsg = error.message || 'Không thể khởi tạo phiên đăng ký.';
+                showResult(errorMsg, 'error');
                 startButton.disabled = false;
                 if (deleteButton) deleteButton.disabled = false;
                 setCamera(false);

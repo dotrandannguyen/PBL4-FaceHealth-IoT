@@ -121,6 +121,11 @@ if (isset($faceEnrollmentActions[$action]) && $method === 'POST') {
     return;
 }
 
+if ($action === 'face_registration' && $method === 'GET') {
+    $faceEnrollmentController->registrationView();
+    return;
+}
+
 if ($action === 'devices' && $method === 'GET') {
     $deviceController->index();
     return;

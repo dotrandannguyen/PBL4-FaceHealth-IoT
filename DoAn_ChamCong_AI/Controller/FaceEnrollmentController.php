@@ -30,6 +30,42 @@ final class FaceEnrollmentController
         $this->camera = new CameraFrameClient();
     }
 
+    /** Hiển thị trang chuyên mục Đăng ký nhận diện khuôn mặt độc lập trên Web. */
+    public function registrationView(): void
+    {
+        AuthController::requireAdmin();
+        $pageTitle = 'Đăng ký nhận diện khuôn mặt';
+        $csrfToken = CsrfToken::token();
+        $employees = $this->employees->findAll();
+
+        $selectedEmployeeId = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($selectedEmployeeId === false) {
+            $selectedEmployeeId = null;
+        }
+
+        if ($selectedEmployeeId === null && !empty($employees)) {
+            $selectedEmployeeId = (int)$employees[0]['MaNV'];
+        }
+
+        $selectedEmployee = null;
+        $faceSamples = [];
+        if ($selectedEmployeeId !== null) {
+            $selectedEmployee = $this->employees->findById($selectedEmployeeId);
+            if ($selectedEmployee !== null) {
+                $faceSamples = $this->faceEmbeddings->findByEmployee($selectedEmployeeId);
+            }
+        }
+
+        $aiHealth = null;
+        try {
+            $aiHealth = $this->ai->health();
+        } catch (Throwable $e) {
+            $aiHealth = ['success' => false, 'model_ready' => false];
+        }
+
+        require __DIR__ . '/../View/face_registration.php';
+    }
+
     /** Chuyển tiếp frame JPEG từ camera singleton hiện có cho giao diện enrollment. */
     public function frame(): void
     {

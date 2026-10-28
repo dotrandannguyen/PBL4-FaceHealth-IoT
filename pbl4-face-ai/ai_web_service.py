@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, has_request_context
 from werkzeug.exceptions import RequestEntityTooLarge
 import cv2
 import numpy as np
@@ -58,10 +58,11 @@ PORT = int(os.environ.get("AI_PORT", 5001))
 _engine: Optional[FaceEngine] = None
 _engine_lock = threading.Lock()
 
-_cap: Optional[CameraSource] = None
+_cap: Optional[Any] = None
 _camera_lock = threading.RLock()
 _camera_last_used = 0.0
 _camera_idle_timer = None
+_active_camera_source: Optional[str] = None
 CAMERA_IDLE_SECONDS = 3.0
 
 
@@ -101,24 +102,45 @@ def get_face_engine() -> FaceEngine:
     return _engine
 
 
-def get_camera() -> CameraSource:
-    """Khởi tạo Camera: Hỗ trợ cả ESP32-CAM On-Demand Stream và Webcam."""
-    global _cap, _camera_last_used
+def get_camera(source_override: Optional[str] = None):
+    """Khởi tạo Camera: Hỗ trợ chuyển đổi linh hoạt giữa ESP32-CAM và Webcam."""
+    global _cap, _camera_last_used, _active_camera_source
     with _camera_lock:
+        req_arg = request.args.get("source") if has_request_context() else None
+        requested = source_override or req_arg or os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
+        if requested is None:
+            requested = "local"
+        requested = str(requested).strip().lower()
+        if requested not in ("esp32", "local"):
+            requested = "local"
+
+        # Nếu đang mở nguồn khác, giải phóng và khởi tạo lại theo nguồn mới
+        if _cap is not None and _active_camera_source != requested:
+            try:
+                _cap.release()
+            except Exception:
+                pass
+            _cap = None
+
         if _cap is None or not _cap.isOpened():
             if _cap is not None:
-                _cap.release()
-            cam_source = os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
-            if cam_source == "esp32":
+                try:
+                    _cap.release()
+                except Exception:
+                    pass
+                _cap = None
+            _active_camera_source = requested
+            if requested == "esp32":
                 print(">> [AI Service] Đang mở Camera ESP32...")
-                _cap = CameraSource(source="esp32", width=640, height=480)
+                esp32_url = os.environ.get("ESP32_STREAM_URL", "http://esp32cam.local:81/stream")
+                _cap = CameraSource(source="esp32", stream_url=esp32_url, width=640, height=480)
             else:
                 print(">> [AI Service] Đang mở webcam nội bộ theo cấu hình...")
                 index = int(os.environ.get("PBL4_CAMERA_ID", "0"))
                 backend = os.environ.get("PBL4_CAMERA_BACKEND", "dshow" if sys.platform == "win32" else "auto")
                 api = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF, "auto": cv2.CAP_ANY}.get(backend)
                 if api is None:
-                    raise ValueError("Invalid camera backend")
+                    api = cv2.CAP_ANY
                 _cap = cv2.VideoCapture(index, api)
                 _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -176,7 +198,7 @@ def decode_enrollment_request():
 
 @atexit.register
 def release_camera():
-    global _cap, _camera_idle_timer
+    global _cap, _camera_idle_timer, _active_camera_source
     with _camera_lock:
         if _camera_idle_timer is not None:
             _camera_idle_timer.cancel()
@@ -186,6 +208,7 @@ def release_camera():
                 _cap.release()
             finally:
                 _cap = None
+        _active_camera_source = None
 
 
 @app.route("/health", methods=["GET"])
@@ -193,10 +216,12 @@ def health():
     """Kiểm tra sức khỏe service AI."""
     with _camera_lock:
         camera_open = _cap is not None and _cap.isOpened()
+        active_source = _active_camera_source or os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
     return jsonify({
         "success": True,
         "model_ready": _engine is not None,
         "camera_open": camera_open,
+        "camera_source": active_source,
         "service": "PBL4 Face AI Service",
         "timestamp": int(time.time()),
     })
@@ -206,9 +231,10 @@ def health():
 def camera_frame():
     """Trả về 1 frame JPEG từ Camera (ESP32-CAM hoặc Webcam) phục vụ Web GUI."""
     global _camera_last_used
+    source = request.args.get("source")
     try:
         with _camera_lock:
-            cap = get_camera()
+            cap = get_camera(source_override=source)
             try:
                 ret, frame = cap.read()
             except Exception:

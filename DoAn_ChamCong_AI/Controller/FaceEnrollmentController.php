@@ -31,12 +31,41 @@ final class FaceEnrollmentController
     }
 
     /** Hiển thị trang chuyên mục Đăng ký nhận diện khuôn mặt độc lập trên Web. */
+    /** Lấy nguồn camera hiện tại (local hoặc esp32), ưu tiên request rồi tới session. */
+    public function getRequestedCameraSource(): string
+    {
+        $source = $_POST['source'] ?? ($_GET['source'] ?? ($_SESSION['face_camera_source'] ?? 'local'));
+        if (!in_array($source, ['local', 'esp32'], true)) {
+            $source = 'local';
+        }
+        $_SESSION['face_camera_source'] = $source;
+
+        return $source;
+    }
+
+    /** Cập nhật nguồn camera đang chọn trong phiên làm việc của Admin. */
+    public function setCameraSource(): void
+    {
+        AuthController::requireAdmin();
+        if (!$this->requirePostCsrf()) {
+            return;
+        }
+        $source = $this->getRequestedCameraSource();
+        $this->jsonResponse([
+            'success' => true,
+            'source' => $source,
+            'message' => 'Đã chuyển nguồn camera sang ' . ($source === 'esp32' ? 'ESP32-CAM (WiFi)' : 'Webcam máy tính'),
+        ]);
+    }
+
+    /** Hiển thị trang chuyên mục Đăng ký nhận diện khuôn mặt độc lập trên Web. */
     public function registrationView(): void
     {
         AuthController::requireAdmin();
         $pageTitle = 'Đăng ký nhận diện khuôn mặt';
         $csrfToken = CsrfToken::token();
         $employees = $this->employees->findAll();
+        $cameraSource = $this->getRequestedCameraSource();
 
         $selectedEmployeeId = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         if ($selectedEmployeeId === false) {
@@ -70,8 +99,9 @@ final class FaceEnrollmentController
     public function frame(): void
     {
         AuthController::requireAdmin();
+        $source = $this->getRequestedCameraSource();
         session_write_close();
-        $jpeg = $this->camera->captureJpeg();
+        $jpeg = $this->camera->captureJpeg($source);
         if (!is_string($jpeg) || strlen($jpeg) > self::MAX_IMAGE_BYTES) {
             http_response_code(503);
             header('Cache-Control: private, no-store');
@@ -364,9 +394,10 @@ final class FaceEnrollmentController
         return $state;
     }
 
-    private function cameraFrame(): ?string
+    private function cameraFrame(?string $source = null): ?string
     {
-        $jpeg = $this->camera->captureJpeg();
+        $source = $source ?? $this->getRequestedCameraSource();
+        $jpeg = $this->camera->captureJpeg($source);
         if (!is_string($jpeg) || strlen($jpeg) > self::MAX_IMAGE_BYTES || !$this->isValidImage($jpeg)) {
             return null;
         }

@@ -56,23 +56,32 @@
 
     const employeeId = root.dataset.employeeId;
     const csrfToken = root.dataset.csrf;
+    let currentSource = root.dataset.cameraSource || 'local';
+
     const startButton = document.querySelector('[data-face-start]');
     const deleteButton = document.querySelector('[data-face-delete]');
     const cancelButton = root.querySelector('[data-face-cancel]');
     const completeButton = root.querySelector('[data-face-complete]');
     const camera = root.querySelector('[data-face-camera]');
     const cameraEmpty = root.querySelector('[data-face-camera-empty]');
+    const viewport = root.querySelector('[data-face-viewport]');
+    const reticle = root.querySelector('[data-face-reticle]');
+    const reticleSourceLabel = root.querySelector('[data-reticle-source-label]');
+    const reticleHint = root.querySelector('[data-reticle-hint]');
+    const matchIndicator = document.getElementById('pose-match-indicator');
+    const deviceHint = document.getElementById('camera-device-hint');
     const stepLabel = root.querySelector('[data-face-step]');
     const feedback = root.querySelector('[data-face-feedback]');
     const poseList = root.querySelector('[data-face-pose-list]');
     const result = document.querySelector('[data-face-result]');
+    const deviceButtons = document.querySelectorAll('[data-camera-device]');
 
     const poses = [
-        { key: 'frontal', label: 'Chính diện' },
-        { key: 'left', label: 'Nghiêng trái' },
-        { key: 'right', label: 'Nghiêng phải' },
-        { key: 'up', label: 'Ngẩng nhẹ' },
-        { key: 'down', label: 'Cúi nhẹ' },
+        { key: 'frontal', label: 'Chính diện', guide: 'Nhìn thẳng vào tâm camera, giữ nét mặt tự nhiên.' },
+        { key: 'left', label: 'Nghiêng trái', guide: 'Nghiêng đầu nhẹ sang bên TRÁI khoảng 15 độ.' },
+        { key: 'right', label: 'Nghiêng phải', guide: 'Nghiêng đầu nhẹ sang bên PHẢI khoảng 15 độ.' },
+        { key: 'up', label: 'Ngẩng nhẹ', guide: 'Ngẩng cằm lên trên nhẹ nhàng khoảng 10 độ.' },
+        { key: 'down', label: 'Cúi nhẹ', guide: 'Cúi đầu nhẹ xuống dưới khoảng 10 độ.' },
     ];
 
     let captured = 0;
@@ -82,8 +91,59 @@
     let poseTimer = null;
     let frameTimer = null;
 
-    const post = async (action) => {
-        const body = new URLSearchParams({ _csrf_token: csrfToken });
+    // ── Xử lý chuyển đổi thiết bị quét (Webcam vs ESP32-CAM) ──────────────
+    const updateDeviceUi = (source) => {
+        currentSource = source;
+        root.dataset.cameraSource = source;
+        deviceButtons.forEach((btn) => {
+            const active = btn.dataset.cameraDevice === source;
+            btn.classList.toggle('is-active', active);
+        });
+
+        if (deviceHint) {
+            deviceHint.textContent = source === 'esp32'
+                ? '📡 Luồng ESP32: http://esp32cam.local:81/stream'
+                : '📷 Nguồn Webcam: Camera ID 0 (DirectShow 640x480)';
+        }
+
+        if (reticleSourceLabel) {
+            reticleSourceLabel.textContent = source === 'esp32' ? 'ESP32-CAM' : 'WEBCAM';
+        }
+    };
+
+    deviceButtons.forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const newSource = btn.dataset.cameraDevice;
+            if (newSource === currentSource) return;
+
+            updateDeviceUi(newSource);
+
+            // Gửi thông báo chuyển nguồn tới backend
+            try {
+                const body = new URLSearchParams({ _csrf_token: csrfToken, source: newSource });
+                await fetch(`/?action=face_camera_set_source&id=${encodeURIComponent(employeeId)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+                    body,
+                    credentials: 'same-origin',
+                });
+            } catch (err) {
+                console.warn('Lỗi lưu nguồn camera:', err);
+            }
+
+            // Nếu đang trong phiên quét camera, làm mới khung hình ngay lập tức
+            if (running && camera && !camera.hidden) {
+                camera.src = `/?action=face_camera_frame&source=${encodeURIComponent(newSource)}&ts=${Date.now()}`;
+            }
+        });
+    });
+
+    const post = async (action, extraParams = {}) => {
+        const body = new URLSearchParams({
+            _csrf_token: csrfToken,
+            source: currentSource,
+            ...extraParams,
+        });
         const response = await fetch(`/?action=${action}&id=${encodeURIComponent(employeeId)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
@@ -117,33 +177,58 @@
                 ? `Bước ${captured + 1}/5 · ${step.label}`
                 : '✅ Đã hoàn tất 5/5 góc khuôn mặt!';
         }
+        if (feedback && step) {
+            feedback.textContent = step.guide;
+        }
         if (poseList) {
-            [...poseList.children].forEach((item, index) => {
-                item.style.background = index < captured ? '#dcfce7' : (index === captured && captured < poses.length ? '#dbeafe' : '#f1f5f9');
-                item.style.color = index < captured ? '#166534' : (index === captured && captured < poses.length ? '#1e40af' : '#475467');
-                item.style.border = index === captured && captured < poses.length ? '1px solid #3b82f6' : '1px solid transparent';
+            [...poseList.children].forEach((card, index) => {
+                const statusSpan = card.querySelector('[data-pose-status]');
+                card.classList.remove('is-active', 'is-complete');
+                if (index < captured) {
+                    card.classList.add('is-complete');
+                    if (statusSpan) statusSpan.textContent = '✓ Đã đạt';
+                } else if (index === captured && captured < poses.length) {
+                    card.classList.add('is-active');
+                    if (statusSpan) statusSpan.textContent = 'Đang quét...';
+                } else {
+                    if (statusSpan) statusSpan.textContent = 'Chờ chụp';
+                }
             });
+        }
+    };
+
+    const setReticleMatched = (matched) => {
+        if (viewport) {
+            viewport.classList.toggle('is-matched', matched);
+        }
+        if (matchIndicator) {
+            matchIndicator.style.display = matched ? 'inline-flex' : 'none';
         }
     };
 
     const setCamera = (enabled) => {
         if (camera) camera.hidden = !enabled;
         if (cameraEmpty) cameraEmpty.hidden = enabled;
+        if (reticle) reticle.hidden = !enabled;
+
         if (!enabled) {
+            setReticleMatched(false);
             if (camera) camera.removeAttribute('src');
             clearInterval(frameTimer);
             frameTimer = null;
             return;
         }
+
         const refreshFrame = () => {
             if (document.hidden || !running) return;
             if (camera) {
-                camera.src = `/?action=face_camera_frame&ts=${Date.now()}`;
+                camera.src = `/?action=face_camera_frame&source=${encodeURIComponent(currentSource)}&ts=${Date.now()}`;
             }
         };
+
         refreshFrame();
         clearInterval(frameTimer);
-        frameTimer = setInterval(refreshFrame, 400);
+        frameTimer = setInterval(refreshFrame, 350);
     };
 
     const stopPosePolling = () => {
@@ -152,14 +237,26 @@
         running = false;
         busy = false;
         stableSince = 0;
+        setReticleMatched(false);
     };
 
     if (camera) {
         camera.addEventListener('error', () => {
             camera.hidden = true;
+            if (reticle) reticle.hidden = true;
             if (cameraEmpty) {
                 cameraEmpty.hidden = false;
-                cameraEmpty.innerHTML = '<div style="color: #ef4444; font-weight: 500;">⚠️ Không kết nối được Camera!</div><div style="font-size: 13px; margin-top: 6px;">Vui lòng kiểm tra AI Service trên cổng 5001 hoặc nguồn Camera ESP32/Webcam.</div>';
+                const isEsp = currentSource === 'esp32';
+                cameraEmpty.innerHTML = `
+                    <div style="color: #ef4444; font-weight: 700; font-size: 15px; margin-bottom: 6px;">
+                        ⚠️ Không kết nối được Camera (${isEsp ? 'ESP32-CAM' : 'Webcam máy tính'})!
+                    </div>
+                    <div style="font-size: 13px; color: #cbd5e1; max-width: 440px; margin: 0 auto; line-height: 1.5;">
+                        ${isEsp 
+                            ? 'Vui lòng kiểm tra nguồn điện và mạng WiFi của ESP32-CAM (mặc định: http://esp32cam.local:81/stream).'
+                            : 'Vui lòng kiểm tra AI Service trên cổng 5001 hoặc thử chuyển thiết bị sang ESP32-CAM ở trên.'}
+                    </div>
+                `;
             }
         });
 
@@ -167,6 +264,7 @@
             if (camera.naturalWidth > 0) {
                 camera.hidden = false;
                 if (cameraEmpty) cameraEmpty.hidden = true;
+                if (reticle && running) reticle.hidden = false;
             }
         });
     }
@@ -174,14 +272,18 @@
     const captureCurrentPose = async () => {
         busy = true;
         stableSince = 0;
+        setReticleMatched(true);
         try {
             const { response, payload } = await post('face_enrollment_capture');
             if (!response.ok || !payload.success) {
+                setReticleMatched(false);
                 if (feedback) feedback.textContent = payload.instruction || payload.message || 'Mẫu chưa đạt chuẩn, hãy giữ đúng hướng.';
                 return;
             }
             captured = Number(payload.captured || captured + 1);
             renderStep();
+            setReticleMatched(false);
+
             if (captured >= poses.length) {
                 stopPosePolling();
                 setCamera(false);
@@ -191,9 +293,11 @@
                     completeButton.disabled = false;
                 }
             } else {
-                if (feedback) feedback.textContent = `Chụp thành công! Chuyển sang góc tiếp theo: ${poses[captured].label}.`;
+                if (feedback) feedback.textContent = `✨ Chụp thành công góc ${captured}/5! Hãy chuyển sang: ${poses[captured].label}.`;
+                if (reticleHint) reticleHint.textContent = poses[captured].guide;
             }
         } catch (error) {
+            setReticleMatched(false);
             if (feedback) feedback.textContent = error.message || 'Lỗi thu nhận mẫu.';
         } finally {
             busy = false;
@@ -207,31 +311,35 @@
             const { response, payload } = await post('face_enrollment_pose');
             if (!response.ok || !payload.success) {
                 stableSince = 0;
+                setReticleMatched(false);
                 if (feedback) feedback.textContent = payload.instruction || payload.message || 'Đang chờ phát hiện khuôn mặt...';
                 return;
             }
 
             if (payload.pose_ok) {
                 const now = Date.now();
+                setReticleMatched(true);
                 if (!stableSince) {
                     stableSince = now;
-                    if (feedback) feedback.textContent = `Tư thế chuẩn: ${poses[captured].label}! Giữ nguyên để chụp...`;
-                } else if (now - stableSince >= 700) {
+                    if (feedback) feedback.textContent = `🎯 Đúng tư thế: ${poses[captured].label}! Giữ yên 1 giây để chụp...`;
+                } else if (now - stableSince >= 650) {
                     await captureCurrentPose();
                 }
             } else {
                 stableSince = 0;
+                setReticleMatched(false);
                 if (feedback) feedback.textContent = payload.instruction || payload.message || `Vui lòng xoay mặt theo hướng: ${poses[captured].label}.`;
             }
         } catch (error) {
             stableSince = 0;
+            setReticleMatched(false);
             if (feedback) feedback.textContent = error.message || 'Lỗi kiểm tra hướng mặt.';
         } finally {
             busy = false;
         }
     };
 
-    // Bắt đầu đăng ký
+    // ── Nút Bắt đầu đăng ký ───────────────────────────────────────────────
     if (startButton) {
         startButton.addEventListener('click', async () => {
             startButton.disabled = true;
@@ -239,6 +347,7 @@
             if (result) result.hidden = true;
             captured = 0;
             renderStep();
+
             if (completeButton) {
                 completeButton.hidden = true;
                 completeButton.disabled = true;
@@ -252,8 +361,9 @@
                 }
                 running = true;
                 setCamera(true);
-                if (feedback) feedback.textContent = `Đã mở camera. Hãy nhìn vào camera theo hướng: ${poses[0].label}.`;
-                poseTimer = setInterval(pollPose, 600);
+                if (feedback) feedback.textContent = `Camera đã kích hoạt. Nhìn vào tâm camera theo hướng: ${poses[0].label}.`;
+                if (reticleHint) reticleHint.textContent = poses[0].guide;
+                poseTimer = setInterval(pollPose, 550);
             } catch (error) {
                 showResult(error.message, 'error');
                 startButton.disabled = false;
@@ -263,7 +373,7 @@
         });
     }
 
-    // Hủy phiên
+    // ── Nút Hủy phiên quét ────────────────────────────────────────────────
     if (cancelButton) {
         cancelButton.addEventListener('click', async () => {
             stopPosePolling();
@@ -272,14 +382,14 @@
             if (completeButton) completeButton.hidden = true;
             startButton.disabled = false;
             if (deleteButton) deleteButton.disabled = false;
-            if (feedback) feedback.textContent = 'Đã hủy phiên đăng ký.';
+            if (feedback) feedback.textContent = 'Đã hủy phiên quét. Nhấn nút "Bắt đầu đăng ký" khi bạn sẵn sàng.';
             try {
                 await post('face_enrollment_cancel');
             } catch {}
         });
     }
 
-    // Lưu 5 mẫu
+    // ── Nút Lưu 5 mẫu khuôn mặt ──────────────────────────────────────────
     if (completeButton) {
         completeButton.addEventListener('click', async () => {
             completeButton.disabled = true;
@@ -297,7 +407,7 @@
         });
     }
 
-    // Xóa đăng ký
+    // ── Nút Xóa dữ liệu khuôn mặt ────────────────────────────────────────
     if (deleteButton) {
         deleteButton.addEventListener('click', async () => {
             if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ mẫu khuôn mặt của nhân viên này?')) {

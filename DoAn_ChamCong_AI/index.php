@@ -107,6 +107,11 @@ if ($action === 'face_registration_delete' && $method === 'POST') {
     return;
 }
 
+if ($action === 'face_camera_set_source' && $method === 'POST') {
+    $faceEnrollmentController->setCameraSource();
+    return;
+}
+
 $faceEnrollmentActions = [
     'face_gallery_refresh' => 'refreshGallery',
     'face_enrollment_start' => 'start',
@@ -115,6 +120,7 @@ $faceEnrollmentActions = [
     'face_enrollment_complete' => 'complete',
     'face_enrollment_cancel' => 'cancel',
     'face_registration_delete' => 'deleteRegistration',
+    'face_camera_set_source' => 'setCameraSource',
 ];
 if (isset($faceEnrollmentActions[$action]) && $method === 'POST') {
     $faceEnrollmentController->{$faceEnrollmentActions[$action]}();

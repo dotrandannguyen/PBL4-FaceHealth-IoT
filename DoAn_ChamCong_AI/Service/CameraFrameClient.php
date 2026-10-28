@@ -14,18 +14,24 @@ final class CameraFrameClient
         );
     }
 
-    public function captureJpeg(): ?string
+    public function captureJpeg(?string $source = null): ?string
     {
+        $url = $this->frameUrl;
+        if ($source !== null && $source !== '') {
+            $separator = strpos($url, '?') === false ? '?' : '&';
+            $url .= $separator . 'source=' . urlencode($source);
+        }
+
         $context = stream_context_create([
             'http' => [
                 'method' => 'GET',
                 'header' => 'Authorization: Bearer ' . (getenv('PBL4_INTERNAL_TOKEN') ?: '') . "\r\n",
-                'timeout' => 1.5,
+                'timeout' => 2.0,
                 'ignore_errors' => true,
                 'follow_location' => 0,
             ],
         ]);
-        $image = @file_get_contents($this->frameUrl, false, $context, 0, 5 * 1024 * 1024 + 1);
+        $image = @file_get_contents($url, false, $context, 0, 5 * 1024 * 1024 + 1);
         $status = 0;
         foreach ($http_response_header ?? [] as $header) {
             if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/', $header, $matches)) {

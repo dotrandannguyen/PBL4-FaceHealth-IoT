@@ -272,6 +272,24 @@ class CameraApiTests(unittest.TestCase):
         self.timers[-1].callback()
         self.cap.release.assert_called_once()
 
+    def test_camera_source_switch_releases_and_recreates(self):
+        esp_cap = types.SimpleNamespace(
+            isOpened=lambda: True,
+            read=lambda: (True, np.zeros((8, 8, 3), dtype=np.uint8)),
+            release=unittest.mock.Mock(),
+        )
+        with patch.object(service, 'CameraSource', return_value=esp_cap):
+            # First request with local
+            resp_local = self.client.get('/internal/camera/frame?source=local', headers=self.headers)
+            self.assertEqual(resp_local.status_code, 200)
+            self.assertEqual(self.client.get('/health').json['camera_source'], 'local')
+
+            # Switch to esp32: old cap must be released and new esp32 opened
+            resp_esp = self.client.get('/internal/camera/frame?source=esp32', headers=self.headers)
+            self.assertEqual(resp_esp.status_code, 200)
+            self.cap.release.assert_called_once()
+            self.assertEqual(self.client.get('/health').json['camera_source'], 'esp32')
+
 
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0]] + remaining)

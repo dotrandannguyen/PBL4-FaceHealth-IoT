@@ -14,17 +14,36 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 ?>
 
 <style>
-/* ── Giao diện Tinh gọn Một Màn Hình (Single Viewport - Không cuộn trang) ── */
+/* ── Giao diện Tinh gọn Một Màn Hình (Single Viewport - Điền kín xuống đáy) ── */
+.face-compact-page {
+    padding-top: 8px !important;
+    padding-bottom: 12px !important;
+    box-sizing: border-box;
+}
+
+@media (min-width: 993px) {
+    .face-compact-page {
+        height: calc(100vh - 64px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+}
+
 .face-compact-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.6fr) minmax(350px, 1fr);
+    grid-template-columns: minmax(0, 1.55fr) minmax(360px, 1fr);
     gap: 14px;
     align-items: stretch;
+    flex: 1;
+    min-height: 0;
 }
 
 @media (max-width: 992px) {
     .face-compact-layout {
         grid-template-columns: 1fr;
+        flex: none;
+        min-height: auto;
     }
 }
 
@@ -34,6 +53,14 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
     border-radius: 10px;
     padding: 12px 14px;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.face-compact-right-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    height: 100%;
 }
 
 /* Nút chuyển đổi thiết bị quét */
@@ -70,11 +97,12 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
     box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
 }
 
-/* Camera Viewport: Chiều cao chuẩn 330px vừa vặn hoàn hảo */
+/* Camera Viewport: Tự động co giãn (flex: 1) lấp đầy xuống đáy */
 .face-compact-viewport {
     position: relative;
     width: 100%;
-    height: 330px;
+    flex: 1;
+    min-height: 320px;
     border-radius: 10px;
     overflow: hidden;
     background: #060911;
@@ -86,11 +114,28 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 }
 
 .face-compact-camera-img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
+    object-position: center;
     background: #000000;
     display: block;
+    transition: object-fit 0.2s ease;
+}
+
+.face-compact-camera-img.is-contain {
+    object-fit: contain;
+}
+
+.face-compact-camera-img[hidden],
+.face-compact-viewport [hidden] {
+    display: none !important;
+}
+
+video.face-compact-camera-img {
+    transform: scaleX(-1);
 }
 
 /* Khung ngắm Reticle Overlay (Tích hợp HUD) */
@@ -271,9 +316,9 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 }
 </style>
 
-<main class="page-container page-container--wide" style="padding-top: 8px; padding-bottom: 12px;">
+<main class="page-container page-container--wide face-compact-page">
     <!-- 1. Thanh tiêu đề Compact trên 1 dòng -->
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; flex-shrink: 0;">
         <div style="display: flex; align-items: center; gap: 10px;">
             <h1 style="font-size: 19px; font-weight: 700; color: #0f172a; margin: 0;">
                 Đăng ký nhận diện khuôn mặt
@@ -295,7 +340,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 
     <!-- Cảnh báo nếu AI Service chưa bật -->
     <?php if (!$aiReady): ?>
-        <div class="notice notice--warning" style="margin: 0 0 8px; padding: 6px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
+        <div class="notice notice--warning" style="margin: 0 0 8px; padding: 6px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
             <span>⚠️ <strong>AI Service chưa bật (Cổng 5001):</strong> Hãy chạy file <code>run_ai_service.bat</code> trong thư mục dự án rồi tải lại trang.</span>
             <a class="button button--secondary button--small" href="javascript:location.reload()" style="padding: 2px 8px; font-size: 11px;">🔄 Thử lại</a>
         </div>
@@ -304,7 +349,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
     <!-- 2. Bố cục 2 cột gọn gàng, khớp trọn 1 màn hình -->
     <div class="face-compact-layout">
         <!-- ════════ CỘT TRÁI: STUDIO CAMERA QUÉT (GỌN GÀNG) ════════ -->
-        <section class="face-compact-card" aria-labelledby="studio-heading" style="display: flex; flex-direction: column;">
+        <section class="face-compact-card" aria-labelledby="studio-heading" style="display: flex; flex-direction: column; min-height: 0; height: 100%;">
             <?php if ($selectedId === null): ?>
                 <div class="empty-state" style="padding: 48px 16px; text-align: center;">
                     <div style="font-size: 15px; font-weight: 600; color: #334155;">Chưa chọn nhân viên</div>
@@ -314,7 +359,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                 </div>
             <?php else: ?>
                 <!-- Hàng điều khiển 1 dòng: Chọn NV + Chọn Thiết bị + Gợi ý -->
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;">
                     <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px;">
                         <span style="font-size: 12px; font-weight: 600; color: #475467; white-space: nowrap;">Nhân viên:</span>
                         <select id="employee-select-picker" class="input" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; font-weight: 500; height: 30px; width: 100%; max-width: 250px;" onchange="if(this.value) window.location.href='/?action=face_registration&id=' + this.value;">
@@ -347,14 +392,16 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                     </div>
                 </div>
 
-                <div id="camera-device-hint" style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 4px;">
+                <div id="camera-device-hint" style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 4px; flex-shrink: 0;">
                     <?= $cameraSource === 'esp32' ? '📡 Luồng ESP32: http://esp32cam.local:81/stream' : '📷 Nguồn Webcam: Camera ID 0 (DirectShow)' ?>
                 </div>
 
                 <!-- Khung hình Camera Viewport Compact (330px) -->
-                <div class="face-enrollment-root" data-face-enrollment data-employee-id="<?= $selectedId ?>" data-csrf="<?= $h($csrfToken) ?>" data-face-count="<?= $faceCount ?>" data-camera-source="<?= $h($cameraSource) ?>" data-ai-ready="<?= $aiReady ? '1' : '0' ?>">
+                <div class="face-enrollment-root" data-face-enrollment data-employee-id="<?= $selectedId ?>" data-csrf="<?= $h($csrfToken) ?>" data-face-count="<?= $faceCount ?>" data-camera-source="<?= $h($cameraSource) ?>" data-ai-ready="<?= $aiReady ? '1' : '0' ?>" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                     <div class="face-compact-viewport" data-face-viewport>
-                        <img class="face-compact-camera-img" data-face-camera alt="Khung hình camera đăng ký khuôn mặt" hidden>
+                        <video class="face-compact-camera-img" data-face-video autoplay playsinline muted hidden style="display: none;"></video>
+                        <img class="face-compact-camera-img" data-face-camera alt="Khung hình camera đăng ký khuôn mặt" hidden style="display: none;">
+                        <canvas data-face-canvas style="display: none;"></canvas>
 
                         <div class="face-hero-empty" data-face-camera-empty style="color: #94a3b8; text-align: center; padding: 20px;">
                             <svg style="width: 44px; height: 44px; margin: 0 auto 8px; stroke: #475467; fill: none;" viewBox="0 0 24 24">
@@ -368,16 +415,21 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 
                         <!-- Khung ngắm Viewfinder HUD Overlay -->
                         <div class="face-reticle-overlay" data-face-reticle hidden>
-                            <div class="face-reticle-top">
+                            <div class="face-reticle-top" style="pointer-events: auto;">
                                 <span class="face-reticle-live-badge">
                                     <span class="face-reticle-live-dot"></span>
                                     <span>LIVE</span>
                                     <span style="color: #64748b; margin: 0 1px;">·</span>
                                     <span data-reticle-source-label><?= $cameraSource === 'esp32' ? 'ESP32-CAM' : 'WEBCAM' ?></span>
                                 </span>
-                                <span style="font-size: 11px; color: rgba(255,255,255,0.7); font-family: monospace; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px;">
-                                    640x480 · ArcFace 512-dim
-                                </span>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <button id="toggle-camera-fit-btn" type="button" title="Chuyển chế độ lấp đầy / toàn khung hình" style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(255,255,255,0.25); color: #e2e8f0; font-size: 11px; padding: 2px 7px; border-radius: 4px; cursor: pointer; transition: all 0.15s ease;">
+                                        ⛶ Lấp đầy
+                                    </button>
+                                    <span style="font-size: 11px; color: rgba(255,255,255,0.7); font-family: monospace; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px;">
+                                        640x480 · ArcFace 512-dim
+                                    </span>
+                                </div>
                             </div>
 
                             <!-- Tâm bầu dục định vị khuôn mặt -->
@@ -401,15 +453,23 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                                         Nhìn thẳng vào tâm camera, giữ nét mặt tự nhiên.
                                     </span>
                                 </div>
-                                <div id="pose-match-indicator" style="display: none; align-items: center; padding: 2px 8px; border-radius: 12px; background: #22c55e; color: #ffffff; font-weight: 700; font-size: 11px; white-space: nowrap;">
-                                    ✓ Khớp tư thế! Giữ yên...
+                                <div id="pose-countdown-container" style="display: none; align-items: center; gap: 6px;">
+                                    <div id="pose-match-indicator" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 12px; background: #22c55e; color: #ffffff; font-weight: 700; font-size: 11px; white-space: nowrap;">
+                                        ✓ Khớp tư thế! Giữ yên...
+                                    </div>
+                                    <div style="width: 20px; height: 20px; position: relative;">
+                                        <svg viewBox="0 0 36 36" style="width: 20px; height: 20px; transform: rotate(-90deg);">
+                                            <path stroke="rgba(255,255,255,0.2)" stroke-width="4" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                            <path id="countdown-ring-progress" stroke="#22c55e" stroke-width="4" stroke-dasharray="100, 100" stroke-dashoffset="100" stroke-linecap="round" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                        </svg>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <!-- Dải 5 bước tư thế thu nhỏ (chiếm ~36px) -->
-                    <ol class="face-pose-strip" data-face-pose-list>
+                    <ol class="face-pose-strip" data-face-pose-list style="flex-shrink: 0;">
                         <li class="face-pose-step" data-pose="frontal">
                             <span class="step-title">1. Chính diện</span>
                             <span class="step-status" data-pose-status>Chờ chụp</span>
@@ -433,7 +493,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                     </ol>
 
                     <!-- Thanh nút bấm điều khiển (gọn gàng) -->
-                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0;">
                         <button class="button button--primary" type="button" data-face-start style="padding: 7px 18px; font-size: 13px; font-weight: 600;">
                             <?= $faceCount > 0 ? '🔄 Đăng ký lại (5 góc)' : '📸 Bắt đầu đăng ký' ?>
                         </button>
@@ -450,16 +510,16 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                         <?php endif; ?>
                     </div>
 
-                    <p class="notice face-enrollment-result" data-face-result role="status" style="margin-top: 8px; padding: 6px 10px; font-size: 12px;" hidden></p>
+                    <p class="notice face-enrollment-result" data-face-result role="status" style="margin-top: 8px; padding: 6px 10px; font-size: 12px; flex-shrink: 0;" hidden></p>
                 </div>
             <?php endif; ?>
         </section>
 
         <!-- ════════ CỘT PHẢI: MẪU ĐÃ LƯU & DANH BẠ NHÂN VIÊN ════════ -->
-        <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div class="face-compact-right-col">
             <!-- Khối 1: Mẫu khuôn mặt hiện có (Dải 5 ảnh nhỏ gọn ~85px) -->
             <?php if ($selectedId !== null): ?>
-                <section class="face-compact-card" aria-labelledby="sample-gallery-title" style="padding: 10px 12px;">
+                <section class="face-compact-card" aria-labelledby="sample-gallery-title" style="padding: 10px 12px; flex-shrink: 0;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span id="sample-gallery-title" style="font-size: 13px; font-weight: 700; color: #0f172a;">
                             Mẫu đã lưu (<?= $faceCount ?>/5)
@@ -482,8 +542,8 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
                             ?>
                             <div style="text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px; background: #ffffff;">
                                 <?php if ($hasImg && $embId !== null): ?>
-                                    <button class="face-sample-image" type="button" data-face-preview="/?action=face_image&amp;id=<?= $embId ?>" aria-label="Xem ảnh mẫu" style="width: 100%; border-radius: 4px; overflow: hidden; border: none; padding: 0; background: none; cursor: zoom-in; display: block;">
-                                        <img src="/?action=face_image&amp;id=<?= $embId ?>" alt="Góc <?= $slot + 1 ?>" style="width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; display: block;" loading="lazy">
+                                    <button class="face-sample-image" type="button" data-face-preview="/?action=face_image&amp;id=<?= $embId ?>&amp;t=<?= time() ?>" aria-label="Xem ảnh mẫu" style="width: 100%; border-radius: 4px; overflow: hidden; border: none; padding: 0; background: none; cursor: zoom-in; display: block;">
+                                        <img src="/?action=face_image&amp;id=<?= $embId ?>&amp;t=<?= time() ?>" alt="Góc <?= $slot + 1 ?>" style="width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; display: block;" loading="lazy">
                                     </button>
                                 <?php elseif ($sample !== null): ?>
                                     <div style="width: 100%; aspect-ratio: 1; background: #eff6ff; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #2563eb; border-radius: 4px; font-weight: 600;">Vector</div>
@@ -498,15 +558,15 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
             <?php endif; ?>
 
             <!-- Khối 2: Danh bạ nhân viên gọn gàng có cuộn nội bộ -->
-            <section class="face-compact-card" aria-labelledby="employee-directory-title" style="flex: 1; display: flex; flex-direction: column;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px;">
+            <section class="face-compact-card" aria-labelledby="employee-directory-title" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-shrink: 0;">
                     <span id="employee-directory-title" style="font-size: 13px; font-weight: 700; color: #0f172a; white-space: nowrap;">
                         Nhân viên (<?= count($employees) ?>)
                     </span>
                     <input id="employee-table-search" type="search" placeholder="Tìm tên / mã NV..." style="padding: 3px 8px; font-size: 12px; border-radius: 6px; border: 1px solid #cbd5e1; height: 26px; width: 140px;">
                 </div>
 
-                <div class="table-scroll" style="max-height: 290px; overflow-y: auto; border: 1px solid #f1f5f9; border-radius: 6px;">
+                <div class="table-scroll" style="flex: 1; min-height: 160px; overflow-y: auto; border: 1px solid #f1f5f9; border-radius: 6px;">
                     <table class="face-compact-table" style="width: 100%; border-collapse: collapse;">
                         <thead style="background: #f8fafc; position: sticky; top: 0; z-index: 1;">
                             <tr style="border-bottom: 1px solid #e2e8f0; color: #475467; text-align: left;">

@@ -115,6 +115,55 @@ final class FaceEnrollmentController
         echo $jpeg;
     }
 
+    /** Proxy luồng MJPEG thời gian thực từ Python AI Service tới trình duyệt (~25-30 FPS). */
+    public function stream(): void
+    {
+        AuthController::requireAdmin();
+        $source = $this->getRequestedCameraSource();
+        session_write_close();
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        $token = getenv('PBL4_INTERNAL_TOKEN') ?: '';
+        $aiBaseUrl = rtrim(getenv('AI_SERVICE_URL') ?: 'http://127.0.0.1:5001', '/');
+        $streamUrl = $aiBaseUrl . '/internal/camera/stream?source=' . urlencode($source);
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'header' => "Authorization: Bearer {$token}\r\n",
+                'timeout' => 30.0,
+                'ignore_errors' => true,
+            ],
+        ]);
+
+        $fp = @fopen($streamUrl, 'rb', false, $context);
+        if (!$fp) {
+            http_response_code(503);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'Không thể mở luồng camera từ AI service.';
+            exit;
+        }
+
+        header('Content-Type: multipart/x-mixed-replace; boundary=frame');
+        header('Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0');
+        header('Pragma: no-cache');
+        header('Connection: close');
+
+        while (!feof($fp) && !connection_aborted()) {
+            $chunk = fread($fp, 8192);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            echo $chunk;
+            flush();
+        }
+        fclose($fp);
+        exit;
+    }
+
     /** Tạo batch enrollment 5 pose trong session; chưa ghi dữ liệu xuống MariaDB. */
     public function start(): void
     {
@@ -170,9 +219,9 @@ final class FaceEnrollmentController
         }
 
         session_write_close();
-        $jpeg = $this->cameraFrame();
+        $jpeg = $this->parseClientImage() ?? $this->cameraFrame();
         if ($jpeg === null) {
-            $this->jsonResponse(['success' => false, 'message' => 'Camera chưa sẵn sàng.'], 503);
+            $this->jsonResponse(['success' => false, 'message' => 'Camera chưa sẵn sàng hoặc không đọc được ảnh.'], 503);
             return;
         }
 
@@ -202,9 +251,9 @@ final class FaceEnrollmentController
             $this->jsonResponse(['success' => false, 'message' => 'Đã đủ 5 mẫu.'], 409);
             return;
         }
-        $jpeg = $this->cameraFrame();
+        $jpeg = $this->parseClientImage() ?? $this->cameraFrame();
         if ($jpeg === null) {
-            $this->jsonResponse(['success' => false, 'message' => 'Camera chưa sẵn sàng.'], 503);
+            $this->jsonResponse(['success' => false, 'message' => 'Camera chưa sẵn sàng hoặc không đọc được ảnh.'], 503);
             return;
         }
 
@@ -392,6 +441,23 @@ final class FaceEnrollmentController
         }
 
         return $state;
+    }
+
+    private function parseClientImage(): ?string
+    {
+        $rawPost = $_POST['image'] ?? null;
+        if (!is_string($rawPost) || $rawPost === '') {
+            return null;
+        }
+        $b64 = $rawPost;
+        if (preg_match('/^data:image\/(jpeg|png|jpg);base64,(.+)$/', $rawPost, $matches)) {
+            $b64 = $matches[2];
+        }
+        $binary = base64_decode($b64, true);
+        if (!is_string($binary) || strlen($binary) > self::MAX_IMAGE_BYTES || !$this->isValidImage($binary)) {
+            return null;
+        }
+        return $binary;
     }
 
     private function cameraFrame(?string $source = null): ?string

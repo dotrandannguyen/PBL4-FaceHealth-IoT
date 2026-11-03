@@ -151,7 +151,7 @@ def get_camera(source_override: Optional[str] = None):
 
 @app.before_request
 def authorize_internal_request():
-    if request.path == "/health":
+    if request.path in ("/health", "/internal/camera/stream", "/stream"):
         return None
     token = os.environ.get("PBL4_INTERNAL_TOKEN", "")
     if not token:
@@ -177,9 +177,26 @@ def decode_enrollment_request():
     pose = data.get("expected_pose", "frontal")
     if pose not in ("frontal", "left", "right", "up", "down"):
         raise ValueError("Invalid pose")
+
+    use_live = data.get("use_live", False)
     encoded = data.get("image")
+
+    if (encoded is None or encoded == "") and use_live:
+        with _camera_lock:
+            cap = get_camera()
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                raise ValueError("Camera frame unavailable")
+            return frame, pose
+
     if not isinstance(encoded, str) or not encoded or len(encoded) > 7 * 1024 * 1024:
         raise ValueError("Invalid image size")
+
+    if encoded.startswith("data:image"):
+        comma = encoded.find(",")
+        if comma != -1:
+            encoded = encoded[comma + 1:]
+
     try:
         raw = base64.b64decode(encoded, validate=True)
         if len(raw) > 5 * 1024 * 1024:
@@ -259,6 +276,52 @@ def camera_frame():
         )
     except Exception as e:
         return Response(b"Camera unavailable", status=503, mimetype="text/plain")
+
+
+def _gen_mjpeg_stream(source: Optional[str] = None):
+    boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+    while True:
+        try:
+            with _camera_lock:
+                cap = get_camera(source_override=source)
+                if hasattr(cap, "read_jpeg"):
+                    ret, frame_bytes = cap.read_jpeg()
+                    if not ret or not frame_bytes:
+                        time.sleep(0.04)
+                        continue
+                    jpg_data = frame_bytes
+                else:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        time.sleep(0.04)
+                        continue
+                    ret_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if not ret_enc:
+                        time.sleep(0.04)
+                        continue
+                    jpg_data = buf.tobytes()
+            yield boundary + jpg_data + b"\r\n"
+            time.sleep(0.03)
+        except GeneratorExit:
+            break
+        except Exception:
+            time.sleep(0.05)
+
+
+@app.route("/internal/camera/stream", methods=["GET"])
+@app.route("/stream", methods=["GET"])
+def camera_stream():
+    """Luồng video MJPEG thời gian thực (~25-30 FPS) từ Camera."""
+    source = request.args.get("source")
+    return Response(
+        _gen_mjpeg_stream(source=source),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0",
+            "Pragma": "no-cache",
+            "Connection": "close",
+        },
+    )
 
 
 @app.route("/api/ai/enrollment/inspect", methods=["POST"])

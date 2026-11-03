@@ -32,7 +32,7 @@ final class FaceSample
             $similarity += $value * $right[$index];
         }
         $configured = getenv('PBL4_ENROLLMENT_THRESHOLD');
-        $threshold = $configured === false ? 0.45 : (float)$configured;
+        $threshold = $configured === false ? 0.28 : (float)$configured;
         if (!is_finite($threshold) || $threshold <= 0 || $threshold > 1) {
             throw new RuntimeException('Invalid enrollment threshold configuration.');
         }

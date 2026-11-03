@@ -31,22 +31,17 @@
             });
         });
 
-        lightboxClose.addEventListener('click', () => {
+        const closeBox = () => {
             if (typeof lightbox.close === 'function') {
                 lightbox.close();
             } else {
                 lightbox.removeAttribute('open');
             }
-        });
+        };
 
+        lightboxClose.addEventListener('click', closeBox);
         lightbox.addEventListener('click', (e) => {
-            if (e.target === lightbox) {
-                if (typeof lightbox.close === 'function') {
-                    lightbox.close();
-                } else {
-                    lightbox.removeAttribute('open');
-                }
-            }
+            if (e.target === lightbox) closeBox();
         });
     }
 
@@ -62,12 +57,17 @@
     const deleteButton = document.querySelector('[data-face-delete]');
     const cancelButton = root.querySelector('[data-face-cancel]');
     const completeButton = root.querySelector('[data-face-complete]');
+
+    const localVideo = root.querySelector('[data-face-video]');
     const camera = root.querySelector('[data-face-camera]');
+    const canvas = root.querySelector('[data-face-canvas]') || document.createElement('canvas');
     const cameraEmpty = root.querySelector('[data-face-camera-empty]');
     const viewport = root.querySelector('[data-face-viewport]');
     const reticle = root.querySelector('[data-face-reticle]');
     const reticleSourceLabel = root.querySelector('[data-reticle-source-label]');
     const reticleHint = root.querySelector('[data-reticle-hint]');
+    const countdownContainer = document.getElementById('pose-countdown-container');
+    const countdownProgress = document.getElementById('countdown-ring-progress');
     const matchIndicator = document.getElementById('pose-match-indicator');
     const deviceHint = document.getElementById('camera-device-hint');
     const stepLabel = root.querySelector('[data-face-step]');
@@ -75,6 +75,19 @@
     const poseList = root.querySelector('[data-face-pose-list]');
     const result = document.querySelector('[data-face-result]');
     const deviceButtons = document.querySelectorAll('[data-camera-device]');
+    const toggleFitBtn = document.getElementById('toggle-camera-fit-btn');
+
+    if (toggleFitBtn) {
+        toggleFitBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isContain = camera.classList.toggle('is-contain');
+            localVideo.classList.toggle('is-contain', isContain);
+            toggleFitBtn.textContent = isContain ? '🔲 Toàn khung' : '⛶ Lấp đầy';
+            toggleFitBtn.title = isContain
+                ? 'Chuyển sang chế độ lấp đầy khung hình (Cover)'
+                : 'Chuyển sang chế độ xem trọn tỉ lệ gốc 4:3 (Contain)';
+        });
+    }
 
     const poses = [
         { key: 'frontal', label: 'Chính diện', guide: 'Nhìn thẳng vào tâm camera, giữ nét mặt tự nhiên.' },
@@ -89,7 +102,8 @@
     let busy = false;
     let stableSince = 0;
     let poseTimer = null;
-    let frameTimer = null;
+    let webRtcStream = null;
+    const HOLD_DURATION_MS = 400; // Thời gian giữ tư thế chuẩn trước khi chụp (0.4s)
 
     // ── Xử lý chuyển đổi thiết bị quét (Webcam vs ESP32-CAM) ──────────────
     const updateDeviceUi = (source) => {
@@ -102,8 +116,8 @@
 
         if (deviceHint) {
             deviceHint.textContent = source === 'esp32'
-                ? '📡 Luồng ESP32: http://esp32cam.local:81/stream'
-                : '📷 Nguồn Webcam: Camera ID 0 (DirectShow 640x480)';
+                ? '📡 Luồng ESP32: http://esp32cam.local:81/stream (Proxy 25-30 FPS)'
+                : '📷 Nguồn Webcam: WebRTC Trực tiếp (30-60 FPS)';
         }
 
         if (reticleSourceLabel) {
@@ -118,7 +132,7 @@
 
             updateDeviceUi(newSource);
 
-            // Gửi thông báo chuyển nguồn tới backend
+            // Gửi thông báo chuyển nguồn tới backend session
             try {
                 const body = new URLSearchParams({ _csrf_token: csrfToken, source: newSource });
                 await fetch(`/?action=face_camera_set_source&id=${encodeURIComponent(employeeId)}`, {
@@ -131,9 +145,10 @@
                 console.warn('Lỗi lưu nguồn camera:', err);
             }
 
-            // Nếu đang trong phiên quét camera, làm mới khung hình ngay lập tức
-            if (running && camera && !camera.hidden) {
-                camera.src = `/?action=face_camera_frame&source=${encodeURIComponent(newSource)}&ts=${Date.now()}`;
+            // Nếu đang trong phiên quét camera, chuyển đổi nguồn mượt mà ngay
+            if (running) {
+                stopCameraStreams();
+                startCameraStream(newSource);
             }
         });
     });
@@ -197,38 +212,141 @@
         }
     };
 
-    const setReticleMatched = (matched) => {
+    const setReticleMatched = (matched, progressPercent = 0) => {
         if (viewport) {
             viewport.classList.toggle('is-matched', matched);
         }
-        if (matchIndicator) {
-            matchIndicator.style.display = matched ? 'inline-flex' : 'none';
+        if (countdownContainer) {
+            countdownContainer.style.display = matched ? 'inline-flex' : 'none';
+        }
+        if (countdownProgress) {
+            const offset = 100 - Math.min(100, Math.max(0, progressPercent));
+            countdownProgress.style.strokeDashoffset = offset;
+        }
+    };
+
+    // ── Trích xuất snapshot frame hiện tại từ Video/Img qua Canvas ─────────
+    const getSnapshotBase64 = () => {
+        const isLocal = currentSource === 'local';
+        const sourceElement = isLocal ? localVideo : camera;
+        if (!sourceElement) return null;
+
+        const w = isLocal ? (sourceElement.videoWidth || 640) : (sourceElement.naturalWidth || 640);
+        const h = isLocal ? (sourceElement.videoHeight || 480) : (sourceElement.naturalHeight || 480);
+        if (w <= 0 || h <= 0) return null;
+
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        if (isLocal) {
+            // Lật gương ngang cho webcam để khớp với hiển thị tự nhiên của người dùng
+            ctx.save();
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(sourceElement, 0, 0, w, h);
+            ctx.restore();
+        } else {
+            ctx.drawImage(sourceElement, 0, 0, w, h);
+        }
+
+        try {
+            return canvas.toDataURL('image/jpeg', 0.88);
+        } catch (err) {
+            console.warn('Canvas export error:', err);
+            return null;
+        }
+    };
+
+    // ── Bật luồng Camera (WebRTC cho Webcam hoặc MJPEG Stream cho ESP32) ───
+    const startCameraStream = async (source) => {
+        if (cameraEmpty) cameraEmpty.hidden = true;
+        if (reticle) reticle.hidden = false;
+
+        if (source === 'local') {
+            // WEBCAM: Mở trực tiếp qua WebRTC (30-60 FPS mượt mà, không bị lock 503)
+            if (camera) {
+                camera.hidden = true;
+                camera.style.display = 'none';
+                camera.removeAttribute('src');
+            }
+            if (localVideo) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            facingMode: 'user',
+                        },
+                        audio: false,
+                    });
+                    webRtcStream = stream;
+                    localVideo.srcObject = stream;
+                    await localVideo.play();
+                    localVideo.hidden = false;
+                    localVideo.style.display = 'block';
+                } catch (err) {
+                    console.error('Không thể mở Webcam qua WebRTC:', err);
+                    localVideo.hidden = true;
+                    localVideo.style.display = 'none';
+                    if (cameraEmpty) {
+                        cameraEmpty.hidden = false;
+                        cameraEmpty.innerHTML = `
+                            <div style="color: #ef4444; font-weight: 700; font-size: 14px; margin-bottom: 6px;">
+                                ⚠️ Trình duyệt chưa được cấp quyền truy cập Webcam!
+                            </div>
+                            <div style="font-size: 12px; color: #cbd5e1; max-width: 440px; margin: 0 auto; line-height: 1.5;">
+                                Vui lòng bấm vào biểu tượng Camera trên thanh địa chỉ trình duyệt để Cho phép (Allow) quyền truy cập.
+                            </div>
+                        `;
+                    }
+                }
+            }
+        } else {
+            // ESP32-CAM: Mở luồng MJPEG Server Proxy Stream (25-30 FPS mượt mà)
+            if (localVideo) {
+                localVideo.hidden = true;
+                localVideo.style.display = 'none';
+                if (localVideo.srcObject) {
+                    localVideo.srcObject.getTracks().forEach((t) => t.stop());
+                    localVideo.srcObject = null;
+                }
+            }
+            if (camera) {
+                camera.hidden = false;
+                camera.style.display = 'block';
+                camera.src = `/?action=face_camera_stream&source=esp32&ts=${Date.now()}`;
+            }
+        }
+    };
+
+    const stopCameraStreams = () => {
+        if (webRtcStream) {
+            webRtcStream.getTracks().forEach((track) => track.stop());
+            webRtcStream = null;
+        }
+        if (localVideo) {
+            localVideo.hidden = true;
+            localVideo.style.display = 'none';
+            localVideo.srcObject = null;
+        }
+        if (camera) {
+            camera.hidden = true;
+            camera.style.display = 'none';
+            camera.removeAttribute('src');
         }
     };
 
     const setCamera = (enabled) => {
-        if (camera) camera.hidden = !enabled;
-        if (cameraEmpty) cameraEmpty.hidden = enabled;
-        if (reticle) reticle.hidden = !enabled;
-
         if (!enabled) {
+            stopCameraStreams();
+            if (cameraEmpty) cameraEmpty.hidden = false;
+            if (reticle) reticle.hidden = true;
             setReticleMatched(false);
-            if (camera) camera.removeAttribute('src');
-            clearInterval(frameTimer);
-            frameTimer = null;
             return;
         }
-
-        const refreshFrame = () => {
-            if (document.hidden || !running) return;
-            if (camera) {
-                camera.src = `/?action=face_camera_frame&source=${encodeURIComponent(currentSource)}&ts=${Date.now()}`;
-            }
-        };
-
-        refreshFrame();
-        clearInterval(frameTimer);
-        frameTimer = setInterval(refreshFrame, 350);
+        startCameraStream(currentSource);
     };
 
     const stopPosePolling = () => {
@@ -242,29 +360,20 @@
 
     if (camera) {
         camera.addEventListener('error', () => {
-            camera.hidden = true;
-            if (reticle) reticle.hidden = true;
-            if (cameraEmpty) {
-                cameraEmpty.hidden = false;
-                const isEsp = currentSource === 'esp32';
-                cameraEmpty.innerHTML = `
-                    <div style="color: #ef4444; font-weight: 700; font-size: 15px; margin-bottom: 6px;">
-                        ⚠️ Không kết nối được Camera (${isEsp ? 'ESP32-CAM' : 'Webcam máy tính'})!
-                    </div>
-                    <div style="font-size: 13px; color: #cbd5e1; max-width: 440px; margin: 0 auto; line-height: 1.5;">
-                        ${isEsp 
-                            ? 'Vui lòng kiểm tra nguồn điện và mạng WiFi của ESP32-CAM (mặc định: http://esp32cam.local:81/stream).'
-                            : 'Vui lòng kiểm tra AI Service trên cổng 5001 hoặc thử chuyển thiết bị sang ESP32-CAM ở trên.'}
-                    </div>
-                `;
-            }
-        });
-
-        camera.addEventListener('load', () => {
-            if (camera.naturalWidth > 0) {
-                camera.hidden = false;
-                if (cameraEmpty) cameraEmpty.hidden = true;
-                if (reticle && running) reticle.hidden = false;
+            if (currentSource === 'esp32' && running) {
+                camera.hidden = true;
+                if (reticle) reticle.hidden = true;
+                if (cameraEmpty) {
+                    cameraEmpty.hidden = false;
+                    cameraEmpty.innerHTML = `
+                        <div style="color: #ef4444; font-weight: 700; font-size: 14px; margin-bottom: 6px;">
+                            ⚠️ Không kết nối được luồng video ESP32-CAM!
+                        </div>
+                        <div style="font-size: 12px; color: #cbd5e1; max-width: 440px; margin: 0 auto; line-height: 1.5;">
+                            Vui lòng kiểm tra nguồn điện và mạng WiFi của ESP32-CAM (mặc định: http://esp32cam.local:81/stream).
+                        </div>
+                    `;
+                }
             }
         });
     }
@@ -272,9 +381,11 @@
     const captureCurrentPose = async () => {
         busy = true;
         stableSince = 0;
-        setReticleMatched(true);
+        setReticleMatched(true, 100);
         try {
-            const { response, payload } = await post('face_enrollment_capture');
+            const snapshot = getSnapshotBase64();
+            const extra = snapshot ? { image: snapshot } : {};
+            const { response, payload } = await post('face_enrollment_capture', extra);
             if (!response.ok || !payload.success) {
                 setReticleMatched(false);
                 if (feedback) feedback.textContent = payload.instruction || payload.message || 'Mẫu chưa đạt chuẩn, hãy giữ đúng hướng.';
@@ -287,10 +398,31 @@
             if (captured >= poses.length) {
                 stopPosePolling();
                 setCamera(false);
-                if (feedback) feedback.textContent = '🎉 Đã thu thập đủ 5 góc! Nhấn nút "Lưu 5 mẫu khuôn mặt" bên dưới để hoàn tất.';
-                if (completeButton) {
-                    completeButton.hidden = false;
-                    completeButton.disabled = false;
+                if (feedback) feedback.textContent = '🎉 Đã thu thập đủ 5/5 góc! Đang tự động lưu...';
+                showResult('⏳ Đang tự động lưu 5 mẫu khuôn mặt vào hệ thống...', 'info');
+
+                // Tự động lưu 5 mẫu khuôn mặt sau góc thứ 5
+                try {
+                    const { response: saveRes, payload: savePayload } = await post('face_enrollment_complete');
+                    if (saveRes.ok && savePayload.success) {
+                        showResult('✅ Đã lưu thành công 5 mẫu khuôn mặt và đồng bộ nhận diện AI!', 'success');
+                        setTimeout(() => {
+                            window.location.href = `/?action=face_registration&id=${encodeURIComponent(employeeId)}&ts=${Date.now()}`;
+                        }, 1000);
+                        return;
+                    } else {
+                        showResult(savePayload.message || 'Không thể lưu mẫu khuôn mặt.', 'error');
+                        if (completeButton) {
+                            completeButton.hidden = false;
+                            completeButton.disabled = false;
+                        }
+                    }
+                } catch (saveErr) {
+                    showResult(saveErr.message || 'Không thể lưu mẫu khuôn mặt.', 'error');
+                    if (completeButton) {
+                        completeButton.hidden = false;
+                        completeButton.disabled = false;
+                    }
                 }
             } else {
                 if (feedback) feedback.textContent = `✨ Chụp thành công góc ${captured}/5! Hãy chuyển sang: ${poses[captured].label}.`;
@@ -308,7 +440,9 @@
         if (!running || busy || captured >= poses.length) return;
         busy = true;
         try {
-            const { response, payload } = await post('face_enrollment_pose');
+            const snapshot = getSnapshotBase64();
+            const extra = snapshot ? { image: snapshot } : {};
+            const { response, payload } = await post('face_enrollment_pose', extra);
             if (!response.ok || !payload.success) {
                 stableSince = 0;
                 setReticleMatched(false);
@@ -318,12 +452,18 @@
 
             if (payload.pose_ok) {
                 const now = Date.now();
-                setReticleMatched(true);
                 if (!stableSince) {
                     stableSince = now;
-                    if (feedback) feedback.textContent = `🎯 Đúng tư thế: ${poses[captured].label}! Giữ yên 1 giây để chụp...`;
-                } else if (now - stableSince >= 650) {
-                    await captureCurrentPose();
+                    setReticleMatched(true, 20);
+                    if (feedback) feedback.textContent = `🎯 Đúng tư thế: ${poses[captured].label}! Giữ yên 0.4s để chụp...`;
+                } else {
+                    const elapsed = now - stableSince;
+                    const percent = Math.min(100, Math.round((elapsed / HOLD_DURATION_MS) * 100));
+                    setReticleMatched(true, percent);
+
+                    if (elapsed >= HOLD_DURATION_MS) {
+                        await captureCurrentPose();
+                    }
                 }
             } else {
                 stableSince = 0;
@@ -338,6 +478,14 @@
             busy = false;
         }
     };
+
+    // Hỗ trợ phím cách (SPACE) để chụp ngay khi cần
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' && running && !busy && captured < poses.length) {
+            e.preventDefault();
+            captureCurrentPose();
+        }
+    });
 
     // ── Nút Bắt đầu đăng ký ───────────────────────────────────────────────
     if (startButton) {
@@ -368,7 +516,7 @@
                 setCamera(true);
                 if (feedback) feedback.textContent = `Camera đã kích hoạt. Nhìn vào tâm camera theo hướng: ${poses[0].label}.`;
                 if (reticleHint) reticleHint.textContent = poses[0].guide;
-                poseTimer = setInterval(pollPose, 550);
+                poseTimer = setInterval(pollPose, 450);
             } catch (error) {
                 const errorMsg = error.message || 'Không thể khởi tạo phiên đăng ký.';
                 showResult(errorMsg, 'error');
@@ -395,7 +543,7 @@
         });
     }
 
-    // ── Nút Lưu 5 mẫu khuôn mặt ──────────────────────────────────────────
+    // ── Nút Lưu 5 mẫu khuôn mặt (dự phòng) ────────────────────────────────
     if (completeButton) {
         completeButton.addEventListener('click', async () => {
             completeButton.disabled = true;
@@ -405,7 +553,9 @@
                     throw new Error(payload.message || 'Không thể lưu mẫu khuôn mặt.');
                 }
                 showResult('✅ Đã lưu thành công 5 mẫu khuôn mặt và đồng bộ nhận diện AI!', 'success');
-                setTimeout(() => window.location.reload(), 1200);
+                setTimeout(() => {
+                    window.location.href = `/?action=face_registration&id=${encodeURIComponent(employeeId)}&ts=${Date.now()}`;
+                }, 1000);
             } catch (error) {
                 showResult(error.message, 'error');
                 completeButton.disabled = false;

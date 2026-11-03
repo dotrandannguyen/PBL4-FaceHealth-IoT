@@ -77,6 +77,11 @@ if ($action === 'face_camera_frame' && $method === 'GET') {
     return;
 }
 
+if ($action === 'face_camera_stream' && $method === 'GET') {
+    $faceEnrollmentController->stream();
+    return;
+}
+
 if ($action === 'face_enrollment_start' && $method === 'POST') {
     $faceEnrollmentController->start();
     return;

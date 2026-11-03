@@ -74,6 +74,7 @@ class CameraSource:
 
         self._lock = threading.Lock()
         self._current_frame: Optional[np.ndarray] = None
+        self._latest_jpeg: Optional[bytes] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -163,6 +164,8 @@ class CameraSource:
                                 stream_bytes = stream_bytes[b + 2 :]
 
                                 if len(jpg) > 100:
+                                    with self._lock:
+                                        self._latest_jpeg = jpg
                                     img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
                                     if img is not None and img.size > 0:
                                         with self._lock:
@@ -226,6 +229,28 @@ class CameraSource:
         else:
             ret, frame = self._cap.read()
             return ret, frame
+
+    def read_jpeg(self) -> Tuple[bool, Optional[bytes]]:
+        """Đọc trực tiếp JPEG stream từ ESP32 mà không cần giải mã rồi mã hóa lại (Zero-copy)."""
+        if not self.isOpened():
+            return False, None
+
+        if self.is_esp32:
+            with self._lock:
+                now = time.time()
+                if self._last_frame_time > 0 and (now - self._last_frame_time > 3.5):
+                    ret, buf = cv2.imencode(".jpg", self._create_standby_frame(), [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    return ret, buf.tobytes() if ret else None
+                if self._latest_jpeg is not None:
+                    return True, self._latest_jpeg
+            ret, buf = cv2.imencode(".jpg", self._create_standby_frame(), [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+            return ret, buf.tobytes() if ret else None
+        else:
+            ret, frame = self.read()
+            if not ret or frame is None:
+                return False, None
+            ret_enc, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            return ret_enc, buf.tobytes() if ret_enc else None
 
     def set(self, propId: int, value: float) -> bool:
         if self._cap is not None:

@@ -58,7 +58,10 @@ final class MonitoringController
             $activeTab = 'health';
         }
 
-        $employees = $categories = $healthRows = $alertRows = $chartData = [];
+        $employees = $categories = $healthRows = $overviewRows = $alertRows = $chartData = [];
+        $selectedEmployeeSummary = null;
+        $overallStats = null;
+        $isEmployeeSelected = ($filters['employee_id'] !== null);
         $totalHealthRows = $totalAlertRows = 0;
         $error = null;
 
@@ -67,6 +70,7 @@ final class MonitoringController
             $categories = $this->alerts->findCategories();
             if ($filters['employee_id'] !== null && !$this->employeeExists($employees, $filters['employee_id'])) {
                 $filters['employee_id'] = null;
+                $isEmployeeSelected = false;
                 $errors['employee_id'] = 'Không tìm thấy nhân viên.';
             }
             if ($filters['category'] !== '' && !$this->categoryExists($categories, $filters['category'])) {
@@ -74,25 +78,47 @@ final class MonitoringController
                 $errors['category'] = 'Loại cảnh báo không hợp lệ.';
             }
 
-            $healthResult = $this->health->findHistory($filters, $healthPage, $pageSize);
+            if ($isEmployeeSelected) {
+                // CHẾ ĐỘ 1: XEM CHI TIẾT 1 NHÂN VIÊN ĐƯỢC CHỌN
+                $selectedEmployeeSummary = $this->health->findEmployeeHealthSummary((int)$filters['employee_id']);
+                $healthResult = $this->health->findHistory($filters, $healthPage, $pageSize);
+                $totalHealthRows = $healthResult['total'];
+                $totalHealthPages = max(1, (int)ceil($totalHealthRows / $pageSize));
+                $healthPage = min($healthPage, $totalHealthPages);
+
+                if ($healthPage !== $this->pageNumber('health_page')) {
+                    $healthResult = $this->health->findHistory($filters, $healthPage, $pageSize);
+                }
+                $healthRows = $healthResult['records'];
+                // Chỉ vẽ biểu đồ khi chọn 1 nhân viên cụ thể
+                $chartData = $this->health->findChartData($filters, 30);
+            } else {
+                // CHẾ ĐỘ 2: TỔNG QUAN TẤT CẢ NHÂN VIÊN
+                $overallStats = $this->health->findOverallStatusStats();
+                $overviewResult = $this->health->findOverviewEmployees($filters, $healthPage, $pageSize);
+                $totalHealthRows = $overviewResult['total'];
+                $totalHealthPages = max(1, (int)ceil($totalHealthRows / $pageSize));
+                $healthPage = min($healthPage, $totalHealthPages);
+
+                if ($healthPage !== $this->pageNumber('health_page')) {
+                    $overviewResult = $this->health->findOverviewEmployees($filters, $healthPage, $pageSize);
+                }
+                $overviewRows = $overviewResult['records'];
+                // Tuyệt đối không vẽ biểu đồ nối bừa bãi giữa nhiều người
+                $chartData = [];
+            }
+
+            // Tab Cảnh báo
             $alertResult = $this->alerts->findAlerts($filters, $alertPage, $pageSize);
-            $totalHealthRows = $healthResult['total'];
             $totalAlertRows = $alertResult['total'];
-            $totalHealthPages = max(1, (int)ceil($totalHealthRows / $pageSize));
             $totalAlertPages = max(1, (int)ceil($totalAlertRows / $pageSize));
-            $healthPage = min($healthPage, $totalHealthPages);
             $alertPage = min($alertPage, $totalAlertPages);
 
-            if ($healthPage !== $this->pageNumber('health_page')) {
-                $healthResult = $this->health->findHistory($filters, $healthPage, $pageSize);
-            }
             if ($alertPage !== $this->pageNumber('alert_page')) {
                 $alertResult = $this->alerts->findAlerts($filters, $alertPage, $pageSize);
             }
-
-            $healthRows = $healthResult['records'];
             $alertRows = $alertResult['records'];
-            $chartData = $this->health->findChartData($filters, 20);
+
         } catch (Throwable $exception) {
             error_log('Monitoring page read failed: ' . $exception->getMessage());
             http_response_code(500);

@@ -57,11 +57,19 @@ class StatusFeatureExtractor:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(frame_rgb)
 
-        if not results.multi_face_landmarks or len(results.multi_face_landmarks) != 1:
+        if not results.multi_face_landmarks:
             return None
-        
-        # Chỉ lấy khuôn mặt đầu tiên
-        landmarks = results.multi_face_landmarks[0].landmark
+
+        # Nếu có nhiều mặt, chọn khuôn mặt có diện tích lớn nhất ở tiền cảnh
+        if len(results.multi_face_landmarks) > 1:
+            def _face_area(flm):
+                xs = [p.x for p in flm.landmark]
+                ys = [p.y for p in flm.landmark]
+                return (max(xs) - min(xs)) * (max(ys) - min(ys))
+            face_lm = max(results.multi_face_landmarks, key=_face_area)
+            landmarks = face_lm.landmark
+        else:
+            landmarks = results.multi_face_landmarks[0].landmark
         h, w, _ = frame_bgr.shape
 
         # Chuyển landmark tỉ lệ (0-1) thành pixel thực tế

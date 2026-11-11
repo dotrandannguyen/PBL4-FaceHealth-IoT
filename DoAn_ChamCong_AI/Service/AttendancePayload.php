@@ -62,7 +62,7 @@ final class AttendancePayload
             $metrics['NhipTim'] = (int)$metrics['NhipTim'];
         }
         $image = null;
-        if (isset($data['image'])) {
+        if (isset($data['image']) && $data['image'] !== '' && $data['image'] !== null) {
             if (!is_string($data['image']) || strlen($data['image']) > 7 * 1024 * 1024) {
                 throw new InvalidArgumentException('Ảnh quá lớn hoặc không hợp lệ.');
             }

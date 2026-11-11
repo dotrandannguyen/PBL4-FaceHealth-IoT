@@ -56,6 +56,7 @@
     const startButton = document.querySelector('[data-face-start]');
     const deleteButton = document.querySelector('[data-face-delete]');
     const cancelButton = root.querySelector('[data-face-cancel]');
+    const snapButton = root.querySelector('[data-face-snap]');
     const completeButton = root.querySelector('[data-face-complete]');
 
     const localVideo = root.querySelector('[data-face-video]');
@@ -91,10 +92,10 @@
 
     const poses = [
         { key: 'frontal', label: 'Chính diện', guide: 'Nhìn thẳng vào tâm camera, giữ nét mặt tự nhiên.' },
-        { key: 'left', label: 'Nghiêng trái', guide: 'Nghiêng đầu nhẹ sang bên TRÁI khoảng 15 độ.' },
-        { key: 'right', label: 'Nghiêng phải', guide: 'Nghiêng đầu nhẹ sang bên PHẢI khoảng 15 độ.' },
-        { key: 'up', label: 'Ngẩng nhẹ', guide: 'Ngẩng cằm lên trên nhẹ nhàng khoảng 10 độ.' },
-        { key: 'down', label: 'Cúi nhẹ', guide: 'Cúi đầu nhẹ xuống dưới khoảng 10 độ.' },
+        { key: 'left', label: 'Nghiêng trái', guide: '⬅️ Quay nhẹ đầu sang bên TRÁI khoảng 10-15 độ.' },
+        { key: 'right', label: 'Nghiêng phải', guide: '➡️ Quay nhẹ đầu sang bên PHẢI khoảng 10-15 độ.' },
+        { key: 'up', label: 'Ngẩng nhẹ', guide: '⬆️ Hơi ngẩng cằm lên trên khoảng 10 độ.' },
+        { key: 'down', label: 'Cúi nhẹ', guide: '⬇️ Cúi đầu nhẹ xuống dưới khoảng 10 độ.' },
     ];
 
     let captured = 0;
@@ -103,7 +104,7 @@
     let stableSince = 0;
     let poseTimer = null;
     let webRtcStream = null;
-    const HOLD_DURATION_MS = 400; // Thời gian giữ tư thế chuẩn trước khi chụp (0.4s)
+    const HOLD_DURATION_MS = 250; // Thời gian giữ tư thế chuẩn trước khi chụp (0.25s)
 
     // ── Xử lý chuyển đổi thiết bị quét (Webcam vs ESP32-CAM) ──────────────
     const updateDeviceUi = (source) => {
@@ -240,16 +241,12 @@
         const ctx = canvas.getContext('2d');
         if (!ctx) return null;
 
-        if (isLocal) {
-            // Lật gương ngang cho webcam để khớp với hiển thị tự nhiên của người dùng
-            ctx.save();
-            ctx.translate(w, 0);
-            ctx.scale(-1, 1);
-            ctx.drawImage(sourceElement, 0, 0, w, h);
-            ctx.restore();
-        } else {
-            ctx.drawImage(sourceElement, 0, 0, w, h);
-        }
+        // Lật gương ngang cho CẢ Webcam VÀ ESP32-CAM để người dùng cử động tự nhiên như soi gương
+        ctx.save();
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(sourceElement, 0, 0, w, h);
+        ctx.restore();
 
         try {
             return canvas.toDataURL('image/jpeg', 0.88);
@@ -356,6 +353,7 @@
         busy = false;
         stableSince = 0;
         setReticleMatched(false);
+        if (snapButton) snapButton.hidden = true;
     };
 
     if (camera) {
@@ -454,8 +452,8 @@
                 const now = Date.now();
                 if (!stableSince) {
                     stableSince = now;
-                    setReticleMatched(true, 20);
-                    if (feedback) feedback.textContent = `🎯 Đúng tư thế: ${poses[captured].label}! Giữ yên 0.4s để chụp...`;
+                    setReticleMatched(true, 30);
+                    if (feedback) feedback.textContent = payload.instruction || `🎯 Đúng tư thế: ${poses[captured].label}! Giữ yên 0.25s để chụp...`;
                 } else {
                     const elapsed = now - stableSince;
                     const percent = Math.min(100, Math.round((elapsed / HOLD_DURATION_MS) * 100));
@@ -469,6 +467,7 @@
                 stableSince = 0;
                 setReticleMatched(false);
                 if (feedback) feedback.textContent = payload.instruction || payload.message || `Vui lòng xoay mặt theo hướng: ${poses[captured].label}.`;
+                if (reticleHint && payload.instruction) reticleHint.textContent = payload.instruction;
             }
         } catch (error) {
             stableSince = 0;
@@ -479,7 +478,16 @@
         }
     };
 
-    // Hỗ trợ phím cách (SPACE) để chụp ngay khi cần
+    // Hỗ trợ nút Chụp Ngay và phím cách (SPACE) để chụp tức thì
+    if (snapButton) {
+        snapButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (running && !busy && captured < poses.length) {
+                captureCurrentPose();
+            }
+        });
+    }
+
     window.addEventListener('keydown', (e) => {
         if (e.code === 'Space' && running && !busy && captured < poses.length) {
             e.preventDefault();
@@ -506,6 +514,10 @@
                 completeButton.disabled = true;
             }
             if (cancelButton) cancelButton.hidden = false;
+            if (snapButton) {
+                snapButton.hidden = false;
+                snapButton.disabled = false;
+            }
 
             try {
                 const { response, payload } = await post('face_enrollment_start');
@@ -522,6 +534,7 @@
                 showResult(errorMsg, 'error');
                 startButton.disabled = false;
                 if (deleteButton) deleteButton.disabled = false;
+                if (snapButton) snapButton.hidden = true;
                 setCamera(false);
             }
         });
@@ -531,6 +544,7 @@
     if (cancelButton) {
         cancelButton.addEventListener('click', async () => {
             stopPosePolling();
+            if (snapButton) snapButton.hidden = true;
             setCamera(false);
             cancelButton.hidden = true;
             if (completeButton) completeButton.hidden = true;

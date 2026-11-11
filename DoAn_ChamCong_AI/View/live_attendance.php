@@ -571,27 +571,47 @@ function updateClock() {
 setInterval(updateClock, 1000);
 updateClock();
 
-// Âm thanh nhẹ nhàng khi chấm công hoàn tất
+// Âm thanh nhẹ nhàng khi chấm công hoàn tất & Quản lý AudioContext mở khóa trình duyệt
+let audioCtx = null;
+function getAudioContext() {
+    try {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        return audioCtx;
+    } catch (e) {
+        return null;
+    }
+}
+window.addEventListener('click', () => { getAudioContext(); }, { passive: true });
+window.addEventListener('touchstart', () => { getAudioContext(); }, { passive: true });
+
 function playMinimalBeep() {
     try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
         osc.connect(gain);
-        gain.connect(audioCtx.destination);
+        gain.connect(ctx.destination);
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(659.25, audioCtx.currentTime); // E5
-        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+        osc.frequency.setValueAtTime(659.25, ctx.currentTime); // E5
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
         osc.start();
-        osc.stop(audioCtx.currentTime + 0.25);
+        osc.stop(ctx.currentTime + 0.25);
     } catch (e) {}
 }
 
 const DEFAULT_AVATAR = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24' fill='%2394a3b8'><circle cx='12' cy='8' r='4'/><path d='M4 20c0-4 4-6 8-6s8 2 8 6'/></svg>";
 let isCameraActive = false;
+let currentCameraStreamUrl = 'http://192.168.1.14:81/stream';
 let lastPunchId = <?= (int)($latest['MaCC'] ?? 0) ?>;
 let lastPunchType = "<?= $h($latest['PunchType'] ?? '') ?>";
+let lastPunchTime = "<?= $h($latest['ThoiGianMoiNhat'] ?? '') ?>";
 let activeImageB64 = null;
 
 function showCameraActive() {
@@ -621,9 +641,9 @@ function showCameraActive() {
             footer.style.fontWeight = '600';
         }
 
-        // Kích hoạt luồng Video MJPEG trực tiếp thời gian thực mượt mà từ ESP32-CAM
+        // Kích hoạt luồng Video MJPEG trực tiếp thời gian thực mượt mà từ ESP32-CAM (Động theo IP đã báo danh)
         if (img) {
-            img.src = 'http://192.168.1.14:81/stream';
+            img.src = currentCameraStreamUrl;
             img.style.display = 'block';
         }
     }
@@ -680,6 +700,10 @@ async function pollLiveAttendance() {
         const data = await res.json();
         if (!data.success) return;
 
+        if (data.stream_url && data.stream_url.length > 5) {
+            currentCameraStreamUrl = data.stream_url;
+        }
+
         // 1. Phản hồi tức thì khi có người đặt tay lên cảm biến (On-Demand Activation)
         if (data.active_session) {
             showCameraActive();
@@ -703,9 +727,10 @@ async function pollLiveAttendance() {
 
         // 2. Cập nhật khi hoàn tất một lượt chấm công mới
         const latest = data.latest;
-        if (latest && (latest.MaCC !== lastPunchId || latest.PunchType !== lastPunchType)) {
+        if (latest && (latest.MaCC !== lastPunchId || latest.PunchType !== lastPunchType || latest.ThoiGianMoiNhat !== lastPunchTime)) {
             lastPunchId = latest.MaCC;
             lastPunchType = latest.PunchType;
+            lastPunchTime = latest.ThoiGianMoiNhat;
 
             const isOut = latest.PunchType === 'OUT';
             const badge = document.getElementById('punchTypeBadge');

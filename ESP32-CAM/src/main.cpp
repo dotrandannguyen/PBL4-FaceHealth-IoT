@@ -389,6 +389,17 @@ bool connectWiFi() {
 
         // Bắn broadcast đồng bộ sang ESP8266 khi kết nối thành công
         broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url);
+
+        // Tối ưu nhiệt năng: Tắt phát sóng AP khi đã kết nối Wi-Fi router thành công
+        // Cho phép chip Wi-Fi RF kích hoạt Modem-Sleep để hạ nhiệt độ bo mạch
+        if (WiFi.getMode() != WIFI_STA) {
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_STA);
+            Serial.println("[POWER-SAVE] ✅ Da tat AP phu vi da ket noi WiFi router. Bo mach se mat hon.");
+        }
+        WiFi.setSleep(true);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
         return true;
     } else {
         Serial.println("\n[WIFI] ⚠️ Chua tim thay Wi-Fi quen thuoc, AP van dang phat san sang cho cau hinh.");
@@ -492,6 +503,13 @@ void loop() {
 
     // 2. Tự động phục hồi kết nối ngầm nếu bị mất mạng Wi-Fi
     if (WiFi.status() != WL_CONNECTED) {
+        // Tự động bật lại AP dự phòng nếu router bị mất kết nối để người dùng vẫn cấu hình được
+        if (WiFi.getMode() != WIFI_AP_STA && WiFi.getMode() != WIFI_AP) {
+            Serial.println("\n[POWER-SAVE] ⚠️ Mat WiFi router! Tu dong bat lai AP 'ESP32-CAM-CONFIG' de cuu ho...");
+            WiFi.mode(WIFI_AP_STA);
+            WiFi.softAP(AP_SSID, AP_PASS, 1);
+        }
+
         // Nháy LED chậm báo hiệu đang chờ Wi-Fi
         static unsigned long lastBlink = 0;
         if (now - lastBlink > 800) {

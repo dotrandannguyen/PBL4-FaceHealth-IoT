@@ -75,12 +75,14 @@ final class AttendanceService
                 $attendanceId = (int)$record['MaCC'];
                 $result += ['action' => 'checkout', 'message' => 'Chấm công ra thành công.'];
             } else {
+                // Đã checkout trước đó nhưng quẹt thẻ tiếp -> Cập nhật lại giờ ra mới nhất (tăng ca / ra về muộn)
+                $this->attendance->updateCheckout((int)$record['MaCC'], $event['image'],
+                    $event['status_label'], $event['occurred_at']);
                 $attendanceId = (int)$record['MaCC'];
-                $result['status'] = 'completed';
-                $result += ['action' => 'completed', 'message' => 'Hôm nay bạn đã hoàn thành ca làm việc.'];
+                $result += ['action' => 'checkout', 'message' => 'Cập nhật giờ ra thành công.'];
             }
             $result['MaCC'] = $attendanceId;
-            if ($result['status'] === 'success') {
+            if ($result['status'] === 'success' || $result['status'] === 'completed') {
                 $this->recordHealthAndAlerts($pdo, $event);
             }
             $pdo->prepare('UPDATE AttendanceEvent SET ResultJson = :result WHERE EventId = :event')

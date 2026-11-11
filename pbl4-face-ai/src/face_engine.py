@@ -81,7 +81,7 @@ class FaceEngine:
             np.ndarray shape (512,) đã normalize, hoặc None nếu không tìm thấy mặt
         """
         faces = self.detect(image)
-        if len(faces) != 1:
+        if not faces:
             return None
 
         # Chọn mặt có diện tích bbox lớn nhất

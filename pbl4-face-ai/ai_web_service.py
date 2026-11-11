@@ -45,7 +45,7 @@ if str(SRC_DIR) not in sys.path:
 from src.face_engine import FaceEngine
 from src.verify import load_db
 from src.camera_source import CameraSource
-from src.enrollment_pose import estimate_pose, check_pose_match
+from src.enrollment_pose import estimate_pose, check_pose_match, get_pose_instruction
 from src.gallery_store import replace_from_loader
 from src.gallery_payload import build_gallery
 
@@ -103,6 +103,22 @@ def get_face_engine() -> FaceEngine:
                 _engine = FaceEngine()
                 print(">> [AI Service] Nạp Model thành công!")
     return _engine
+
+
+_status_predictor = None
+_status_lock = threading.Lock()
+
+
+def get_status_predictor():
+    global _status_predictor
+    if _status_predictor is None:
+        with _status_lock:
+            if _status_predictor is None:
+                print(">> [AI Service] Đang nạp StatusPredictor (Random Forest & MediaPipe)...")
+                from src.predict_status import StatusPredictor
+                _status_predictor = StatusPredictor(max_yaw_deg=40.0, max_pitch_deg=45.0)
+                print(">> [AI Service] Nạp StatusPredictor thành công!")
+    return _status_predictor
 
 
 def get_camera(source_override: Optional[str] = None):
@@ -369,6 +385,7 @@ def enrollment_inspect():
                 "success": False,
                 "detected": False,
                 "pose_ok": False,
+                "instruction": "Đang chờ phát hiện khuôn mặt trước camera...",
                 "message": "Không tìm thấy khuôn mặt trong khung hình.",
             })
 
@@ -377,6 +394,7 @@ def enrollment_inspect():
                 "success": False,
                 "detected": True,
                 "pose_ok": False,
+                "instruction": "Phát hiện nhiều khuôn mặt, vui lòng đứng 1 người trước camera.",
                 "message": "Phát hiện nhiều khuôn mặt, vui lòng đứng 1 mình trước camera.",
             })
 
@@ -386,8 +404,7 @@ def enrollment_inspect():
         except (ValueError, TypeError):
             return jsonify({"success": False, "pose_ok": False, "message": "Invalid face landmarks"}), 409
         pose_ok = check_pose_match(expected_pose, detected_pose, metrics)
-
-        msg = f"Khuôn mặt hợp lệ: {expected_pose}" if pose_ok else f"Yêu cầu: {expected_pose} (hiện tại: {detected_pose})"
+        instruction = get_pose_instruction(expected_pose, detected_pose, metrics)
 
         return jsonify({
             "success": True,
@@ -396,7 +413,8 @@ def enrollment_inspect():
             "pose": detected_pose,
             "expected_pose": expected_pose,
             "metrics": metrics,
-            "message": msg,
+            "instruction": instruction,
+            "message": instruction,
         })
     except RequestEntityTooLarge:
         return jsonify({"success": False, "message": "Payload too large"}), 413
@@ -429,7 +447,14 @@ def enrollment_capture():
         except (ValueError, TypeError):
             return jsonify({"success": False, "pose_ok": False, "message": "Invalid face landmarks"}), 409
         if not check_pose_match(expected_pose, detected_pose, metrics):
-            return jsonify({"success": False, "pose_ok": False, "message": "Pose changed before capture"}), 409
+            instruction = get_pose_instruction(expected_pose, detected_pose, metrics)
+            return jsonify({
+                "success": False,
+                "pose_ok": False,
+                "detected_pose": detected_pose,
+                "instruction": instruction,
+                "message": f"Tư thế chưa đạt: {instruction}",
+            }), 409
 
         # Chuẩn hóa vector ArcFace 512-dim dạng float32 (2048 bytes)
         raw_emb = main_face.embedding.astype(np.float32)
@@ -520,6 +545,7 @@ def iot_session_status():
                 "MaNV": s.get("MaNV"),
                 "name": s.get("name"),
                 "matched": s.get("matched", False),
+                "status": s.get("status", "Normal"),
                 "image_b64": s.get("image_b64"),
                 "age_seconds": round(time.monotonic() - s["created_at"], 1),
             }
@@ -527,6 +553,7 @@ def iot_session_status():
         "success": True,
         "active": active,
         "session": latest_session,
+        "stream_url": os.environ.get("ESP32_STREAM_URL", "http://192.168.1.14:81/stream"),
     })
 
 
@@ -534,39 +561,54 @@ def iot_session_status():
 def iot_session_start():
     """
     Kích hoạt khi nhân viên đặt ngón tay lên MAX30102.
-    Lấy frame từ luồng camera (ESP32-CAM hoặc Webcam), nhận diện danh tính ngay lập tức.
+    Lấy chuỗi 3 frame từ luồng camera (ESP32-CAM hoặc Webcam), nhận diện danh tính và phân tích thể trạng AI 2 (RF).
     """
     _clean_expired_iot_sessions()
 
-    # 1. Bắt khung hình từ camera (ưu tiên chụp trực tiếp từ ESP32-CAM nếu có)
-    frame = None
-    jpeg_bytes = None
+    # 1. Bắt chuỗi 3 khung hình liên tiếp từ camera cho AI 2 (trích xuất 7 đặc trưng chuỗi)
+    frames_collected = []
     esp32_url = os.environ.get("ESP32_STREAM_URL", "http://192.168.1.14:81/stream")
     capture_url = esp32_url.replace("/stream", "/capture")
     try:
         import urllib.request
-        req = urllib.request.Request(capture_url, headers={"User-Agent": "PBL4-FaceAI-Client"})
-        with urllib.request.urlopen(req, timeout=1.8) as res:
-            if res.status == 200:
-                jpeg_bytes = res.read()
-                frame = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        for i in range(3):
+            req = urllib.request.Request(capture_url, headers={"User-Agent": "PBL4-FaceAI-Client"})
+            with urllib.request.urlopen(req, timeout=1.8) as res:
+                if res.status == 200:
+                    buf = res.read()
+                    f = cv2.imdecode(np.frombuffer(buf, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if f is not None and f.size > 0:
+                        frames_collected.append((f, buf))
+            if i < 2:
+                time.sleep(0.12)
     except Exception as e:
         app.logger.warning(f"Could not read from /capture: {e}, falling back to get_camera().read()")
 
-    if frame is None or frame.size == 0:
+    # Nếu không đủ 3 frame từ /capture, đọc tiếp từ CameraSource stream
+    if len(frames_collected) < 3:
         with _camera_lock:
             cap = get_camera()
-            ret, frame = cap.read()
-        if frame is not None and frame.size > 0:
-            encoded_ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-            jpeg_bytes = buf.tobytes() if encoded_ok else b""
+            while len(frames_collected) < 3:
+                ret, f = cap.read()
+                if ret and f is not None and f.size > 0:
+                    encoded_ok, buf = cv2.imencode(".jpg", f, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    b = buf.tobytes() if encoded_ok else b""
+                    frames_collected.append((f, b))
+                else:
+                    break
+                if len(frames_collected) < 3:
+                    time.sleep(0.12)
 
-    if frame is None or frame.size == 0:
+    if not frames_collected:
         return jsonify({
             "success": False,
             "message": "Camera khong kha dung",
             "name": "Khong co Camera",
         }), 503
+
+    # Chọn frame đại diện để nhận diện danh tính (ArcFace) và lưu ảnh hồ sơ
+    rep_idx = len(frames_collected) // 2
+    frame, jpeg_bytes = frames_collected[rep_idx]
 
     # 2. Nhận diện khuôn mặt với InsightFace
     engine = get_face_engine()
@@ -594,15 +636,26 @@ def iot_session_start():
         jpeg_bytes = buf.tobytes() if encoded_ok else b""
     image_b64 = base64.b64encode(jpeg_bytes).decode("ascii") if jpeg_bytes else None
 
-    # 4. Phân tích nét mặt mệt mỏi AI 2 (nếu có thể)
+    # 4. Phân tích thể trạng mệt mỏi AI 2 (Random Forest trên chuỗi 3 frame)
     status_label = "Normal"
+    status_confidence = 0.0
+    status_metrics = None
     try:
-        from src.predict_status import StatusPredictor
-        predictor = StatusPredictor()
-        st_res = predictor.predict_status_detailed([frame])
-        if isinstance(st_res, dict) and st_res.get("status") in ("Normal", "Fatigue", "Exhausted"):
-            status_label = st_res["status"]
-    except Exception:
+        raw_frames = [item[0] for item in frames_collected]
+        if len(raw_frames) == 3:
+            predictor = get_status_predictor()
+            st_res = predictor.predict_status_detailed(raw_frames)
+            if isinstance(st_res, dict):
+                st = st_res.get("status")
+                if st in ("Normal", "Fatigue", "Exhausted"):
+                    status_label = st
+                    status_confidence = float(st_res.get("confidence", 0.0))
+                    status_metrics = st_res.get("metrics")
+                else:
+                    app.logger.info(f"AI 2 StatusPredictor result '{st}': {st_res.get('message')}, defaulting to Normal")
+                    status_label = "Normal"
+    except Exception as exc:
+        app.logger.warning(f"AI 2 Status prediction error: {exc}")
         status_label = "Normal"
 
     # 5. Lưu phiên vào RAM
@@ -620,6 +673,8 @@ def iot_session_start():
             "similarity": float(identity.get("similarity", 0.0)),
             "image_b64": image_b64,
             "status": status_label,
+            "confidence": status_confidence,
+            "metrics": status_metrics,
         }
 
     return jsonify({
@@ -628,6 +683,8 @@ def iot_session_start():
         "matched": matched,
         "MaNV": ma_nv,
         "name": student_name if matched else "Chua nhan ra",
+        "status": status_label,
+        "confidence": status_confidence,
         "message": f"Chao {student_name}" if matched else "Nhin thang camera",
     })
 
@@ -707,6 +764,7 @@ def iot_session_biometrics():
         "status": web_res.get("status", "success"),
         "MaNV": session["MaNV"],
         "name": session["name"],
+        "the_trang": session.get("status", "Normal"),
         "bpm": bpm,
         "spo2": spo2,
         "message": msg,
@@ -726,6 +784,7 @@ def iot_session_abort():
 
 if __name__ == "__main__":
     print(f"🚀 [AI Service] Khởi động AI REST Service trên cổng {PORT}...")
-    # Tải trước engine
+    # Tải trước cả 2 mô hình AI
     get_face_engine()
+    get_status_predictor()
     app.run(host=os.environ.get("AI_BIND_HOST", "127.0.0.1"), port=PORT, threaded=True)

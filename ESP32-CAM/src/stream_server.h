@@ -2,6 +2,7 @@
 #define STREAM_SERVER_H
 
 #include <Arduino.h>
+#include <esp_wifi.h>
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "config.h"
@@ -31,6 +32,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     is_streaming_active = true;
+    esp_wifi_set_ps(WIFI_PS_NONE); // Tạm ngắt sleep để đảm bảo luồng stream 25-30 FPS mượt mà
     digitalWrite(INDICATOR_LED_PIN, LOW); // BẬT ĐÈN LED ĐỎ BÁO ĐANG STREAM
     Serial.printf("[STREAM] >>> Client da ket noi! Bat camera stream (Core %d)...\n", xPortGetCoreID());
 
@@ -69,6 +71,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     }
 
     is_streaming_active = false;
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM); // Khôi phục Modem-Sleep khi camera về chế độ chờ (hạ nhiệt độ bo mạch)
     digitalWrite(INDICATOR_LED_PIN, HIGH); // TẮT ĐÈN LED ĐỎ BÁO CAMERA NGHỈ
     Serial.println("[STREAM] <<< Client da ngat ket noi! Tat stream, camera tro ve nghi (Standby).");
     return res;

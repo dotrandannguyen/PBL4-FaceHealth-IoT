@@ -243,7 +243,8 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
     display: none !important;
 }
 
-video.face-compact-camera-img {
+video.face-compact-camera-img,
+img.face-compact-camera-img {
     transform: scaleX(-1);
 }
 
@@ -605,6 +606,14 @@ video.face-compact-camera-img {
                                 </svg>
                                 <span>Bắt đầu đăng ký</span>
                             <?php endif; ?>
+                        </button>
+
+                        <button class="face-btn-dark face-btn-snap" type="button" data-face-snap hidden style="background: #2563eb; color: #fff; border: 1px solid #1d4ed8;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19 4h-3.5l-1.5-2h-4L8.5 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"></path>
+                            </svg>
+                            <span>📸 Chụp góc này ngay (Phím Cách)</span>
                         </button>
 
                         <button class="face-btn-outline" type="button" data-face-cancel hidden>

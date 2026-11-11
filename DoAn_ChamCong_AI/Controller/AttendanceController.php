@@ -288,6 +288,7 @@ final class AttendanceController
         // Kiểm tra xem có ai đang đặt tay đo nhịp tim trên cảm biến MAX30102 không
         $activeSession = false;
         $currentSession = null;
+        $streamUrl = 'http://192.168.1.14:81/stream';
         try {
             $aiBaseUrl = rtrim(getenv('AI_SERVICE_URL') ?: 'http://host.docker.internal:5001', '/');
             $ctx = stream_context_create([
@@ -299,6 +300,9 @@ final class AttendanceController
             $statusRaw = @file_get_contents($aiBaseUrl . '/api/iot/status', false, $ctx);
             if ($statusRaw !== false) {
                 $statusData = json_decode($statusRaw, true);
+                if (!empty($statusData['stream_url'])) {
+                    $streamUrl = $statusData['stream_url'];
+                }
                 if (!empty($statusData['active'])) {
                     $activeSession = true;
                     $currentSession = $statusData['session'] ?? null;
@@ -310,6 +314,7 @@ final class AttendanceController
             'success' => true,
             'active_session' => $activeSession,
             'current_session' => $currentSession,
+            'stream_url' => $streamUrl,
             'latest' => $latest,
             'recent' => $recent,
             'server_time' => (new DateTimeImmutable('now', new DateTimeZone('Asia/Ho_Chi_Minh')))->format('H:i:s d/m/Y'),

@@ -190,7 +190,7 @@
                 return;
             }
             if (stableSince === 0) stableSince = Date.now();
-            if (Date.now() - stableSince >= 800) {
+            if (Date.now() - stableSince >= 250) {
                 await captureCurrentPose();
             }
         } catch (error) {

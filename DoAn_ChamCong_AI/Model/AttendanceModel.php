@@ -288,6 +288,64 @@ final class AttendanceModel
         $statement->execute();
     }
 
+    /** Lấy bản ghi chấm công mới nhất trong toàn hệ thống. */
+    public function findLatestPunch(): ?array
+    {
+        $sql = <<<SQL
+            SELECT 
+                CC.MaCC, CC.MaNV, NV.HoTen,
+                CC.GioVao, CC.GioRa,
+                COALESCE(CC.TheTrangVao, CC.TheTrang, 'Bình thường') AS TheTrangVao,
+                CC.TheTrangRa,
+                CLV.TenCa, CLV.GioBatDau, CLV.GioKetThuc,
+                SK.NhipTim, SK.SpO2, SK.TheTrang AS TheTrangSK,
+                CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhVao), 0) > 0 THEN 1 ELSE 0 END AS HasImageIn,
+                CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhRa), 0) > 0 THEN 1 ELSE 0 END AS HasImageOut,
+                COALESCE(CC.GioRa, CC.GioVao) AS ThoiGianMoiNhat,
+                CASE WHEN CC.GioRa IS NOT NULL THEN 'OUT' ELSE 'IN' END AS PunchType
+            FROM ChamCong CC
+            JOIN NhanVien NV ON NV.MaNV = CC.MaNV
+            LEFT JOIN CaLamViec CLV ON CLV.MaCa = CC.MaCa
+            LEFT JOIN LichSuSucKhoe SK ON SK.MaNV = CC.MaNV AND ABS(TIMESTAMPDIFF(SECOND, SK.ThoiGian, COALESCE(CC.GioRa, CC.GioVao))) <= 120
+            ORDER BY COALESCE(CC.GioRa, CC.GioVao) DESC
+            LIMIT 1
+        SQL;
+        $statement = Database::getConnection()->query($sql);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+
+        return is_array($row) ? $row : null;
+    }
+
+    /** Lấy danh sách chấm công gần đây nhất trong ngày (hoặc gần nhất nếu hôm nay chưa có). */
+    public function findTodayRecentPunches(int $limit = 6): array
+    {
+        $todayStart = (new DateTimeImmutable('today', new DateTimeZone('Asia/Ho_Chi_Minh')))->format('Y-m-d 00:00:00');
+        $sql = <<<SQL
+            SELECT 
+                CC.MaCC, CC.MaNV, NV.HoTen,
+                CC.GioVao, CC.GioRa,
+                COALESCE(CC.TheTrangVao, CC.TheTrang, 'Bình thường') AS TheTrangVao,
+                CC.TheTrangRa,
+                CLV.TenCa, CLV.GioBatDau, CLV.GioKetThuc,
+                SK.NhipTim, SK.SpO2, SK.TheTrang AS TheTrangSK,
+                CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhVao), 0) > 0 THEN 1 ELSE 0 END AS HasImageIn,
+                CASE WHEN COALESCE(OCTET_LENGTH(CC.AnhRa), 0) > 0 THEN 1 ELSE 0 END AS HasImageOut,
+                COALESCE(CC.GioRa, CC.GioVao) AS ThoiGianMoiNhat,
+                CASE WHEN CC.GioRa IS NOT NULL THEN 'OUT' ELSE 'IN' END AS PunchType
+            FROM ChamCong CC
+            JOIN NhanVien NV ON NV.MaNV = CC.MaNV
+            LEFT JOIN CaLamViec CLV ON CLV.MaCa = CC.MaCa
+            LEFT JOIN LichSuSucKhoe SK ON SK.MaNV = CC.MaNV AND ABS(TIMESTAMPDIFF(SECOND, SK.ThoiGian, COALESCE(CC.GioRa, CC.GioVao))) <= 120
+            ORDER BY COALESCE(CC.GioRa, CC.GioVao) DESC
+            LIMIT :limit
+        SQL;
+        $statement = Database::getConnection()->prepare($sql);
+        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        return $statement->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
     private function employeeFilters(?int $employeeId, ?string $keyword, string $alias): array
     {
         $filters = '';

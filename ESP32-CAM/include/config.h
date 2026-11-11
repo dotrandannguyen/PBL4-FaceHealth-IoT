@@ -5,16 +5,16 @@
 #include "camera_pins.h"
 
 // =========================================================================
-// 1. CẤU HÌNH MẠNG WIFI GIA ĐÌNH (MẶC ĐỊNH)
+// 1. CẤU HÌNH MẠNG WIFI (MẶC ĐỊNH SẴN SÀNG TỰ ĐỘNG KẾT NỐI)
 // =========================================================================
-#define DEFAULT_WIFI_SSID       "Phuong Thao"       // Tên WiFi gia đình (2.4 GHz)
-#define DEFAULT_WIFI_PASS       "0796781776"        // Mật khẩu WiFi
+#define DEFAULT_WIFI_SSID       "Phuong Thao"           // Tên WiFi
+#define DEFAULT_WIFI_PASS       "0796781776"            // Mật khẩu WiFi
 
 // =========================================================================
 // 2. CẤU HÌNH MÁY CHỦ FLASK SERVER (MÁY TÍNH WINDOWS)
 // =========================================================================
-#define DEFAULT_SERVER_URL          "http://192.168.1.182:5000/upload"
-#define DEFAULT_SERVER_REGISTER_URL "http://192.168.1.182:5000/api/register_camera"
+#define DEFAULT_SERVER_URL          "http://192.168.1.182:5001"
+#define DEFAULT_SERVER_REGISTER_URL "http://192.168.1.182:5001/api/register_camera"
 #define HTTP_TIMEOUT_MS             5000                // Thời gian chờ phản hồi tối đa (ms)
 
 // =========================================================================
@@ -26,11 +26,10 @@
 #define FLASH_LED_PIN          4                   // Đèn Flash công suất cao (Active HIGH)
 
 // =========================================================================
-// 4. CẤU HÌNH AP WEB PORTAL DỰ PHÒNG KHI ĐỔI MẠNG
+// 4. CẤU HÌNH AP WEB PORTAL DỰ PHÒNG KHI ĐỔI MẠNG (MẠNG MỞ 100% KHÔNG CẦN PASS)
 // =========================================================================
-// Nếu sau 15s không kết nối được WiFi mặc định, ESP32 sẽ tự phát WiFi này
-// Người dùng dùng điện thoại/laptop kết nối vào và mở http://192.168.4.1 để nhập WiFi mới
+// Nếu sau 15s không kết nối được WiFi, ESP32 sẽ tự phát WiFi này (không cần mật khẩu)
 #define AP_SSID                "ESP32-CAM-CONFIG"
-#define AP_PASS                ""                  // Để trống để kết nối nhanh
+#define AP_PASS                NULL                // NULL = Không có mật khẩu, kết nối ngay tức thì
 
 #endif // CONFIG_H

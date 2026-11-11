@@ -24,6 +24,9 @@ import io
 import threading
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+import re
+from uuid import uuid4
+from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify, Response, has_request_context
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -107,12 +110,12 @@ def get_camera(source_override: Optional[str] = None):
     global _cap, _camera_last_used, _active_camera_source
     with _camera_lock:
         req_arg = request.args.get("source") if has_request_context() else None
-        requested = source_override or req_arg or os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "local"))
+        requested = source_override or req_arg or os.environ.get("CAMERA_SOURCE", os.environ.get("PBL4_CAMERA_MODE", "esp32"))
         if requested is None:
-            requested = "local"
+            requested = "esp32"
         requested = str(requested).strip().lower()
         if requested not in ("esp32", "local"):
-            requested = "local"
+            requested = "esp32"
 
         # Nếu đang mở nguồn khác, giải phóng và khởi tạo lại theo nguồn mới
         if _cap is not None and _active_camera_source != requested:
@@ -132,7 +135,7 @@ def get_camera(source_override: Optional[str] = None):
             _active_camera_source = requested
             if requested == "esp32":
                 print(">> [AI Service] Đang mở Camera ESP32...")
-                esp32_url = os.environ.get("ESP32_STREAM_URL", "http://esp32cam.local:81/stream")
+                esp32_url = os.environ.get("ESP32_STREAM_URL", "http://192.168.1.14:81/stream")
                 _cap = CameraSource(source="esp32", stream_url=esp32_url, width=640, height=480)
             else:
                 print(">> [AI Service] Đang mở webcam nội bộ theo cấu hình...")
@@ -149,9 +152,33 @@ def get_camera(source_override: Optional[str] = None):
         return _cap
 
 
+@app.route("/api/register_camera", methods=["POST"])
+def register_camera():
+    """ESP32-CAM tự động báo danh IP và stream URL khi kết nối mạng."""
+    global _active_camera_source, _cap
+    data = request.get_json(silent=True) or {}
+    stream_url = data.get("stream_url")
+    node_ip = data.get("ip")
+    if node_ip and not stream_url:
+        stream_url = f"http://{node_ip}:81/stream"
+    if stream_url:
+        os.environ["ESP32_STREAM_URL"] = stream_url
+        os.environ["CAMERA_SOURCE"] = "esp32"
+        with _camera_lock:
+            if _cap is not None:
+                try:
+                    _cap.release()
+                except Exception:
+                    pass
+                _cap = None
+        print(f">> [AI Service] ESP32-CAM đã báo danh! Cập nhật Stream URL: {stream_url}")
+        return jsonify({"success": True, "stream_url": stream_url}), 200
+    return jsonify({"success": False, "message": "Thieu stream_url hoặc ip"}), 400
+
+
 @app.before_request
 def authorize_internal_request():
-    if request.path in ("/health", "/internal/camera/stream", "/stream"):
+    if request.path in ("/health", "/internal/camera/stream", "/stream", "/api/register_camera", "/api/iot/status"):
         return None
     token = os.environ.get("PBL4_INTERNAL_TOKEN", "")
     if not token:
@@ -461,6 +488,240 @@ def gallery_refresh():
     except Exception:
         app.logger.exception("Gallery refresh failed")
         return jsonify({"success": False, "message": "Gallery refresh failed; previous gallery preserved"}), 503
+
+# =========================================================================
+# IOT COORDINATOR: ĐỒNG BỘ ESP8266 + ESP32-CAM CHO CHẤM CÔNG DƯỚI 10S
+# =========================================================================
+_iot_sessions: Dict[str, Dict[str, Any]] = {}
+_iot_lock = threading.Lock()
+IOT_SESSION_TTL_SECONDS = 12.0
+
+
+def _clean_expired_iot_sessions():
+    now = time.monotonic()
+    with _iot_lock:
+        expired = [sid for sid, s in _iot_sessions.items() if now - s["created_at"] > IOT_SESSION_TTL_SECONDS]
+        for sid in expired:
+            del _iot_sessions[sid]
+
+
+@app.route("/api/iot/status", methods=["GET"])
+def iot_session_status():
+    """Kiểm tra trạng thái phiên chấm công đang diễn ra để web tự động bật/tắt camera on-demand."""
+    _clean_expired_iot_sessions()
+    with _iot_lock:
+        active = len(_iot_sessions) > 0
+        latest_session = None
+        if active:
+            latest_sid = list(_iot_sessions.keys())[-1]
+            s = _iot_sessions[latest_sid]
+            latest_session = {
+                "session_id": s["session_id"],
+                "MaNV": s.get("MaNV"),
+                "name": s.get("name"),
+                "matched": s.get("matched", False),
+                "image_b64": s.get("image_b64"),
+                "age_seconds": round(time.monotonic() - s["created_at"], 1),
+            }
+    return jsonify({
+        "success": True,
+        "active": active,
+        "session": latest_session,
+    })
+
+
+@app.route("/api/iot/start", methods=["POST"])
+def iot_session_start():
+    """
+    Kích hoạt khi nhân viên đặt ngón tay lên MAX30102.
+    Lấy frame từ luồng camera (ESP32-CAM hoặc Webcam), nhận diện danh tính ngay lập tức.
+    """
+    _clean_expired_iot_sessions()
+
+    # 1. Bắt khung hình từ camera (ưu tiên chụp trực tiếp từ ESP32-CAM nếu có)
+    frame = None
+    jpeg_bytes = None
+    esp32_url = os.environ.get("ESP32_STREAM_URL", "http://192.168.1.14:81/stream")
+    capture_url = esp32_url.replace("/stream", "/capture")
+    try:
+        import urllib.request
+        req = urllib.request.Request(capture_url, headers={"User-Agent": "PBL4-FaceAI-Client"})
+        with urllib.request.urlopen(req, timeout=1.8) as res:
+            if res.status == 200:
+                jpeg_bytes = res.read()
+                frame = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except Exception as e:
+        app.logger.warning(f"Could not read from /capture: {e}, falling back to get_camera().read()")
+
+    if frame is None or frame.size == 0:
+        with _camera_lock:
+            cap = get_camera()
+            ret, frame = cap.read()
+        if frame is not None and frame.size > 0:
+            encoded_ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+            jpeg_bytes = buf.tobytes() if encoded_ok else b""
+
+    if frame is None or frame.size == 0:
+        return jsonify({
+            "success": False,
+            "message": "Camera khong kha dung",
+            "name": "Khong co Camera",
+        }), 503
+
+    # 2. Nhận diện khuôn mặt với InsightFace
+    engine = get_face_engine()
+    with _engine_lock:
+        faces = engine.detect(frame)
+
+    from src.verify import identify
+    identity = identify(engine, frame, threshold=0.45)
+    matched = bool(identity.get("match", False))
+    student_id = str(identity.get("student_id") or "")
+    student_name = str(identity.get("name") or "Chưa xác định")
+
+    match_num = re.search(r"(\d+)", student_id)
+    ma_nv = int(match_num.group(1)) if match_num else None
+
+    # Tùy chọn test phần cứng tại bàn nếu chưa có người đứng trước camera
+    if not matched and os.environ.get("PBL4_ALLOW_TEST_FALLBACK", "0") == "1":
+        ma_nv = int(os.environ.get("PBL4_TEST_MANV", "1"))
+        student_name = "Nguyen Van A"
+        matched = True
+
+    # 3. Mã hóa ảnh JPEG base64
+    if jpeg_bytes is None:
+        encoded_ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        jpeg_bytes = buf.tobytes() if encoded_ok else b""
+    image_b64 = base64.b64encode(jpeg_bytes).decode("ascii") if jpeg_bytes else None
+
+    # 4. Phân tích nét mặt mệt mỏi AI 2 (nếu có thể)
+    status_label = "Normal"
+    try:
+        from src.predict_status import StatusPredictor
+        predictor = StatusPredictor()
+        st_res = predictor.predict_status_detailed([frame])
+        if isinstance(st_res, dict) and st_res.get("status") in ("Normal", "Fatigue", "Exhausted"):
+            status_label = st_res["status"]
+    except Exception:
+        status_label = "Normal"
+
+    # 5. Lưu phiên vào RAM
+    session_id = str(uuid4())
+    occurred_at = datetime.now(timezone(timedelta(hours=7))).isoformat(timespec="milliseconds")
+
+    with _iot_lock:
+        _iot_sessions[session_id] = {
+            "session_id": session_id,
+            "created_at": time.monotonic(),
+            "occurred_at": occurred_at,
+            "matched": matched,
+            "MaNV": ma_nv,
+            "name": student_name,
+            "similarity": float(identity.get("similarity", 0.0)),
+            "image_b64": image_b64,
+            "status": status_label,
+        }
+
+    return jsonify({
+        "success": True,
+        "session_id": session_id,
+        "matched": matched,
+        "MaNV": ma_nv,
+        "name": student_name if matched else "Chua nhan ra",
+        "message": f"Chao {student_name}" if matched else "Nhin thang camera",
+    })
+
+
+@app.route("/api/iot/biometrics", methods=["POST"])
+def iot_session_biometrics():
+    """
+    Nhận số đo nhịp tim và SpO2 từ ESP8266 sau 3-5 giây.
+    Gộp với ảnh mặt đã nhận diện và gửi 1 gói chuẩn duy nhất sang Web PHP /api/chamcong.
+    """
+    _clean_expired_iot_sessions()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "JSON object required"}), 400
+
+    session_id = str(data.get("session_id") or "").strip()
+    bpm = data.get("bpm") or data.get("NhipTim")
+    spo2 = data.get("spo2") or data.get("SpO2")
+
+    if not session_id:
+        return jsonify({"success": False, "message": "Thieu session_id"}), 400
+
+    with _iot_lock:
+        session = _iot_sessions.pop(session_id, None)
+
+    if session is None:
+        return jsonify({"success": False, "message": "Phien cham cong da het han hoac khong ton tai"}), 410
+
+    if not session.get("matched") or session.get("MaNV") is None:
+        return jsonify({
+            "success": False,
+            "message": "Chua xac dinh duoc khuon mat",
+            "name": "Chua nhan ra",
+        }), 422
+
+    # Đóng gói payload gửi sang Web Backend PHP
+    event_payload = {
+        "event_id": session["session_id"],
+        "occurred_at": session["occurred_at"],
+        "MaNV": session["MaNV"],
+        "MaTB": int(os.environ.get("PBL4_DEVICE_ID", "1")),
+        "TrangThai": session.get("status", "Normal"),
+        "NhipTim": int(bpm) if bpm and float(bpm) > 0 else None,
+        "SpO2": round(float(spo2), 1) if spo2 and float(spo2) > 0 else None,
+        "image": session.get("image_b64"),
+    }
+
+    web_api_url = os.environ.get("PBL4_WEB_API", "http://localhost:8080/api/chamcong")
+    token = os.environ.get("PBL4_INTERNAL_TOKEN", "")
+
+    try:
+        resp = requests.post(
+            web_api_url,
+            json=event_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            timeout=4.0,
+            allow_redirects=False,
+        )
+        web_res = resp.json() if resp.status_code == 200 else {}
+    except Exception as exc:
+        app.logger.exception("Chuyen tiep cham cong len Web PHP that bai")
+        return jsonify({
+            "success": False,
+            "message": "Loi ket noi Web Server",
+            "name": session["name"],
+        }), 503
+
+    action = web_res.get("action", "checkin")
+    msg = web_res.get("message", "Chấm công thành công")
+
+    return jsonify({
+        "success": True,
+        "action": action,
+        "status": web_res.get("status", "success"),
+        "MaNV": session["MaNV"],
+        "name": session["name"],
+        "bpm": bpm,
+        "spo2": spo2,
+        "message": msg,
+    })
+
+
+@app.route("/api/iot/abort", methods=["POST"])
+def iot_session_abort():
+    """Hủy phiên đo khi nhân viên rút tay ra sớm."""
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get("session_id") or "").strip()
+    if session_id:
+        with _iot_lock:
+            _iot_sessions.pop(session_id, None)
+    return jsonify({"success": True, "message": "Da huy phien do"})
 
 
 if __name__ == "__main__":

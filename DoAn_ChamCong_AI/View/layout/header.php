@@ -18,7 +18,8 @@
                 <a href="/" <?= $activeAction === 'index' ? 'aria-current="page"' : '' ?>>Nhân viên</a>
                 <a href="/?action=face_registration" <?= $activeAction === 'face_registration' ? 'aria-current="page"' : '' ?>>Đăng ký khuôn mặt</a>
                 <a href="/?action=shifts" <?= $activeAction === 'shifts' ? 'aria-current="page"' : '' ?>>Phân ca</a>
-                <a href="/?action=attendance" <?= $activeAction === 'attendance' ? 'aria-current="page"' : '' ?>>Chấm công</a>
+                <a href="/?action=live_attendance" <?= $activeAction === 'live_attendance' ? 'aria-current="page"' : '' ?>>Chấm công trực tiếp</a>
+                <a href="/?action=attendance" <?= $activeAction === 'attendance' ? 'aria-current="page"' : '' ?>>Tra cứu chấm công</a>
                 <a href="/?action=monitoring" <?= $activeAction === 'monitoring' ? 'aria-current="page"' : '' ?>>Sức khỏe &amp; Cảnh báo</a>
                 <a href="/?action=devices" <?= $activeAction === 'devices' ? 'aria-current="page"' : '' ?>>Thiết bị</a>
             </nav>

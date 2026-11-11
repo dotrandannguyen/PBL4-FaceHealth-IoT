@@ -16,7 +16,7 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
 <style>
 /* ── Giao diện Tinh gọn Một Màn Hình (Single Viewport - Điền kín xuống đáy) ── */
 .face-compact-page {
-    padding-top: 8px !important;
+    padding-top: 10px !important;
     padding-bottom: 12px !important;
     box-sizing: border-box;
 }
@@ -63,38 +63,147 @@ $cameraSource = !empty($cameraSource) && in_array($cameraSource, ['local', 'esp3
     height: 100%;
 }
 
-/* Nút chuyển đổi thiết bị quét */
+/* ── Nút chuyển đổi thiết bị quét (Đơn sắc / Tối giản) ── */
 .face-device-pills {
     display: inline-flex;
-    background: #e2e8f0;
-    padding: 2px;
-    border-radius: 6px;
-    gap: 2px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    padding: 3px;
+    border-radius: 8px;
+    gap: 3px;
 }
 
 .face-device-btn {
     border: none;
-    padding: 4px 10px;
-    border-radius: 5px;
+    padding: 5px 12px;
+    border-radius: 6px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition: all 0.15s ease;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     background: transparent;
-    color: #475467;
+    color: #64748b;
+}
+
+.face-device-btn svg {
+    stroke: currentColor;
+    flex-shrink: 0;
 }
 
 .face-device-btn:hover {
     color: #0f172a;
+    background: #e2e8f0;
 }
 
 .face-device-btn.is-active {
-    background: #2563eb;
+    background: #0f172a;
     color: #ffffff;
-    box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+}
+
+.face-device-btn.is-active svg {
+    stroke: #ffffff;
+}
+
+/* ── Hệ thống Nút bấm Hành động Đơn sắc (Monochrome: Đen / Xám) ── */
+.face-btn-dark {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffffff;
+    background: #0f172a;
+    border: 1px solid #0f172a;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.face-btn-dark svg {
+    stroke: currentColor;
+}
+
+.face-btn-dark:hover:not(:disabled) {
+    background: #1e293b;
+    border-color: #1e293b;
+    color: #ffffff;
+}
+
+.face-btn-dark:active:not(:disabled) {
+    background: #334155;
+}
+
+.face-btn-dark:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.face-btn-outline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.face-btn-outline svg {
+    stroke: currentColor;
+}
+
+.face-btn-outline:hover:not(:disabled) {
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #0f172a;
+}
+
+.face-btn-outline:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.face-btn-delete {
+    color: #64748b;
+    border-color: #e2e8f0;
+}
+
+.face-btn-delete:hover:not(:disabled) {
+    color: #0f172a;
+    background: #f8fafc;
+    border-color: #cbd5e1;
+}
+
+.face-table-select-btn {
+    display: inline-block;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #475467;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: all 0.15s ease;
+}
+
+.face-table-select-btn:hover {
+    color: #0f172a;
+    background: #f1f5f9;
+    border-color: #cbd5e1;
 }
 
 /* Camera Viewport: Tự động co giãn (flex: 1) lấp đầy xuống đáy */
@@ -203,15 +312,15 @@ video.face-compact-camera-img {
 
 .face-reticle-oval {
     fill: none;
-    stroke: rgba(56, 189, 248, 0.65);
-    stroke-width: 2.2;
+    stroke: rgba(255, 255, 255, 0.6);
+    stroke-width: 2;
     stroke-dasharray: 6 5;
     transition: all 0.25s ease;
 }
 
 .face-reticle-corner {
     fill: none;
-    stroke: rgba(56, 189, 248, 0.85);
+    stroke: rgba(255, 255, 255, 0.85);
     stroke-width: 3;
     stroke-linecap: round;
     transition: all 0.25s ease;
@@ -230,7 +339,7 @@ video.face-compact-camera-img {
     filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.9));
 }
 
-/* Thanh chỉ dẫn HUD nằm ngay dưới đáy camera (tiết kiệm diện tích) */
+/* Thanh chỉ dẫn HUD nằm ngay dưới đáy camera */
 .face-reticle-hud-bar {
     display: flex;
     justify-content: space-between;
@@ -243,7 +352,7 @@ video.face-compact-camera-img {
     gap: 8px;
 }
 
-/* Dải 5 bước tư thế gọn gàng */
+/* Dải 5 bước tư thế gọn gàng (Đơn sắc cao cấp) */
 .face-pose-strip {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -265,7 +374,7 @@ video.face-compact-camera-img {
 
 .face-pose-step .step-title {
     font-weight: 600;
-    color: #334155;
+    color: #475467;
     display: block;
     white-space: nowrap;
     overflow: hidden;
@@ -280,31 +389,32 @@ video.face-compact-camera-img {
 }
 
 .face-pose-step.is-active {
-    background: #eff6ff;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 1px #3b82f6;
+    background: #0f172a;
+    border-color: #0f172a;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
 }
 
 .face-pose-step.is-active .step-title {
-    color: #1d4ed8;
+    color: #ffffff;
 }
 
 .face-pose-step.is-active .step-status {
-    color: #2563eb;
-    font-weight: 600;
+    color: #94a3b8;
+    font-weight: 500;
 }
 
 .face-pose-step.is-complete {
-    background: #ecfdf5;
-    border-color: #10b981;
+    background: #f1f5f9;
+    border-color: #cbd5e1;
 }
 
 .face-pose-step.is-complete .step-title {
-    color: #047857;
+    color: #0f172a;
+    font-weight: 700;
 }
 
 .face-pose-step.is-complete .step-status {
-    color: #059669;
+    color: #0f172a;
     font-weight: 600;
 }
 
@@ -317,36 +427,15 @@ video.face-compact-camera-img {
 </style>
 
 <main class="page-container page-container--wide face-compact-page">
-    <!-- 1. Thanh tiêu đề Compact trên 1 dòng -->
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; flex-shrink: 0;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <h1 style="font-size: 19px; font-weight: 700; color: #0f172a; margin: 0;">
-                Đăng ký nhận diện khuôn mặt
-            </h1>
-            <?php if ($selectedId !== null): ?>
-                <span class="status-pill status-pill--registered" style="font-size: 12px; padding: 2px 10px;">
-                    <?= $h($selectedCode) ?> · <?= $h($selectedName) ?>
-                </span>
-            <?php endif; ?>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-            <div class="status-pill <?= $aiReady ? 'status-pill--registered' : 'status-pill--pending' ?>" style="font-size: 12px; padding: 2px 10px;">
-                <span aria-hidden="true"></span>
-                AI Service: <?= $aiReady ? 'Sẵn sàng (buffalo_sc)' : 'Chưa bật (Cổng 5001)' ?>
-            </div>
-            <a class="button button--secondary button--small" href="/" style="padding: 3px 10px; font-size: 12px;">Danh sách nhân viên</a>
-        </div>
-    </div>
-
     <!-- Cảnh báo nếu AI Service chưa bật -->
     <?php if (!$aiReady): ?>
         <div class="notice notice--warning" style="margin: 0 0 8px; padding: 6px 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
             <span>⚠️ <strong>AI Service chưa bật (Cổng 5001):</strong> Hãy chạy file <code>run_ai_service.bat</code> trong thư mục dự án rồi tải lại trang.</span>
-            <a class="button button--secondary button--small" href="javascript:location.reload()" style="padding: 2px 8px; font-size: 11px;">🔄 Thử lại</a>
+            <a class="face-btn-outline" href="javascript:location.reload()" style="padding: 3px 10px; font-size: 11px;">Thử lại</a>
         </div>
     <?php endif; ?>
 
-    <!-- 2. Bố cục 2 cột gọn gàng, khớp trọn 1 màn hình -->
+    <!-- Bố cục 2 cột gọn gàng, khớp trọn 1 màn hình -->
     <div class="face-compact-layout">
         <!-- ════════ CỘT TRÁI: STUDIO CAMERA QUÉT (GỌN GÀNG) ════════ -->
         <section class="face-compact-card" aria-labelledby="studio-heading" style="display: flex; flex-direction: column; min-height: 0; height: 100%;">
@@ -358,11 +447,11 @@ video.face-compact-camera-img {
                     </div>
                 </div>
             <?php else: ?>
-                <!-- Hàng điều khiển 1 dòng: Chọn NV + Chọn Thiết bị + Gợi ý -->
+                <!-- Hàng điều khiển 1 dòng: Chọn NV + Chọn Thiết bị -->
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;">
                     <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px;">
                         <span style="font-size: 12px; font-weight: 600; color: #475467; white-space: nowrap;">Nhân viên:</span>
-                        <select id="employee-select-picker" class="input" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; font-weight: 500; height: 30px; width: 100%; max-width: 250px;" onchange="if(this.value) window.location.href='/?action=face_registration&id=' + this.value;">
+                        <select id="employee-select-picker" class="input" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; font-weight: 500; height: 32px; width: 100%; max-width: 260px; color: #0f172a; background: #ffffff;" onchange="if(this.value) window.location.href='/?action=face_registration&id=' + this.value;">
                             <?php foreach ($employees as $emp): ?>
                                 <?php
                                 $eId = (int)$emp['MaNV'];
@@ -383,20 +472,29 @@ video.face-compact-camera-img {
                         <span style="font-size: 12px; font-weight: 600; color: #475467; white-space: nowrap;">Thiết bị:</span>
                         <div class="face-device-pills">
                             <button type="button" class="face-device-btn <?= $cameraSource === 'local' ? 'is-active' : '' ?>" data-camera-device="local">
-                                📷 Webcam
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M23 7l-7 5 7 5V7z"></path>
+                                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                                </svg>
+                                <span>Webcam</span>
                             </button>
                             <button type="button" class="face-device-btn <?= $cameraSource === 'esp32' ? 'is-active' : '' ?>" data-camera-device="esp32">
-                                📡 ESP32-CAM
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
+                                    <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
+                                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+                                    <line x1="12" y1="20" x2="12.01" y2="20"></line>
+                                </svg>
+                                <span>ESP32-CAM</span>
                             </button>
                         </div>
                     </div>
                 </div>
 
-                <div id="camera-device-hint" style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 4px; flex-shrink: 0;">
-                    <?= $cameraSource === 'esp32' ? '📡 Luồng ESP32: http://esp32cam.local:81/stream' : '📷 Nguồn Webcam: Camera ID 0 (DirectShow)' ?>
-                </div>
+                <!-- Ẩn gợi ý thừa về nguồn camera -->
+                <div id="camera-device-hint" style="display: none;"></div>
 
-                <!-- Khung hình Camera Viewport Compact (330px) -->
+                <!-- Khung hình Camera Viewport Compact -->
                 <div class="face-enrollment-root" data-face-enrollment data-employee-id="<?= $selectedId ?>" data-csrf="<?= $h($csrfToken) ?>" data-face-count="<?= $faceCount ?>" data-camera-source="<?= $h($cameraSource) ?>" data-ai-ready="<?= $aiReady ? '1' : '0' ?>" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
                     <div class="face-compact-viewport" data-face-viewport>
                         <video class="face-compact-camera-img" data-face-video autoplay playsinline muted hidden style="display: none;"></video>
@@ -468,7 +566,7 @@ video.face-compact-camera-img {
                         </div>
                     </div>
 
-                    <!-- Dải 5 bước tư thế thu nhỏ (chiếm ~36px) -->
+                    <!-- Dải 5 bước tư thế thu nhỏ -->
                     <ol class="face-pose-strip" data-face-pose-list style="flex-shrink: 0;">
                         <li class="face-pose-step" data-pose="frontal">
                             <span class="step-title">1. Chính diện</span>
@@ -492,20 +590,45 @@ video.face-compact-camera-img {
                         </li>
                     </ol>
 
-                    <!-- Thanh nút bấm điều khiển (gọn gàng) -->
+                    <!-- Thanh nút bấm điều khiển (Đơn sắc: Đen / Xám, biểu tượng SVG) -->
                     <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0;">
-                        <button class="button button--primary" type="button" data-face-start style="padding: 7px 18px; font-size: 13px; font-weight: 600;">
-                            <?= $faceCount > 0 ? '🔄 Đăng ký lại (5 góc)' : '📸 Bắt đầu đăng ký' ?>
+                        <button class="face-btn-dark" type="button" data-face-start>
+                            <?php if ($faceCount > 0): ?>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                                </svg>
+                                <span>Đăng ký lại (5 góc)</span>
+                            <?php else: ?>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                                    <circle cx="12" cy="13" r="4"></circle>
+                                </svg>
+                                <span>Bắt đầu đăng ký</span>
+                            <?php endif; ?>
                         </button>
-                        <button class="button button--secondary" type="button" data-face-cancel hidden style="padding: 7px 14px; font-size: 13px;">
-                            ⏸️ Hủy
+
+                        <button class="face-btn-outline" type="button" data-face-cancel hidden>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                            <span>Hủy</span>
                         </button>
-                        <button class="button button--primary" type="button" data-face-complete disabled hidden style="padding: 7px 18px; font-size: 13px; font-weight: 600; background: #16a34a; border-color: #15803d;">
-                            💾 Lưu 5 mẫu
+
+                        <button class="face-btn-dark" type="button" data-face-complete disabled hidden>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            <span>Lưu 5 mẫu</span>
                         </button>
+
                         <?php if ($faceCount > 0): ?>
-                            <button class="button button--danger" type="button" data-face-delete style="margin-left: auto; padding: 6px 12px; font-size: 12px;">
-                                🗑️ Xóa mẫu đã lưu
+                            <button class="face-btn-outline face-btn-delete" type="button" data-face-delete style="margin-left: auto;">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                                <span>Xóa mẫu đã lưu</span>
                             </button>
                         <?php endif; ?>
                     </div>
@@ -517,22 +640,9 @@ video.face-compact-camera-img {
 
         <!-- ════════ CỘT PHẢI: MẪU ĐÃ LƯU & DANH BẠ NHÂN VIÊN ════════ -->
         <div class="face-compact-right-col">
-            <!-- Khối 1: Mẫu khuôn mặt hiện có (Dải 5 ảnh nhỏ gọn ~85px) -->
+            <!-- Khối 1: Mẫu khuôn mặt hiện có (Dải 5 ảnh nhỏ gọn) -->
             <?php if ($selectedId !== null): ?>
-                <section class="face-compact-card" aria-labelledby="sample-gallery-title" style="padding: 10px 12px; flex-shrink: 0;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span id="sample-gallery-title" style="font-size: 13px; font-weight: 700; color: #0f172a;">
-                            Mẫu đã lưu (<?= $faceCount ?>/5)
-                        </span>
-                        <?php if ($faceCount >= 5): ?>
-                            <span style="font-size: 11px; color: #16a34a; font-weight: 600;">✓ Đủ 5 góc</span>
-                        <?php elseif ($faceCount > 0): ?>
-                            <span style="font-size: 11px; color: #d97706; font-weight: 600;">Thiếu mẫu</span>
-                        <?php else: ?>
-                            <span style="font-size: 11px; color: #94a3b8;">Chưa đăng ký</span>
-                        <?php endif; ?>
-                    </div>
-
+                <section class="face-compact-card" aria-label="5 mẫu khuôn mặt đã lưu" style="padding: 10px 12px; flex-shrink: 0;">
                     <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;">
                         <?php for ($slot = 0; $slot < 5; $slot++): ?>
                             <?php
@@ -546,7 +656,7 @@ video.face-compact-camera-img {
                                         <img src="/?action=face_image&amp;id=<?= $embId ?>&amp;t=<?= time() ?>" alt="Góc <?= $slot + 1 ?>" style="width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; display: block;" loading="lazy">
                                     </button>
                                 <?php elseif ($sample !== null): ?>
-                                    <div style="width: 100%; aspect-ratio: 1; background: #eff6ff; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #2563eb; border-radius: 4px; font-weight: 600;">Vector</div>
+                                    <div style="width: 100%; aspect-ratio: 1; background: #f1f5f9; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #475467; border-radius: 4px; font-weight: 600;">Vector</div>
                                 <?php else: ?>
                                     <div style="width: 100%; aspect-ratio: 1; background: #f8fafc; border: 1px dashed #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #94a3b8; border-radius: 4px;">Trống</div>
                                 <?php endif; ?>
@@ -563,7 +673,7 @@ video.face-compact-camera-img {
                     <span id="employee-directory-title" style="font-size: 13px; font-weight: 700; color: #0f172a; white-space: nowrap;">
                         Nhân viên (<?= count($employees) ?>)
                     </span>
-                    <input id="employee-table-search" type="search" placeholder="Tìm tên / mã NV..." style="padding: 3px 8px; font-size: 12px; border-radius: 6px; border: 1px solid #cbd5e1; height: 26px; width: 140px;">
+                    <input id="employee-table-search" type="search" placeholder="Tìm tên / mã NV..." style="padding: 4px 8px; font-size: 12px; border-radius: 6px; border: 1px solid #cbd5e1; height: 28px; width: 140px; color: #0f172a; background: #ffffff;">
                 </div>
 
                 <div class="table-scroll" style="flex: 1; min-height: 160px; overflow-y: auto; border: 1px solid #f1f5f9; border-radius: 6px;">
@@ -585,23 +695,23 @@ video.face-compact-camera-img {
                                 $eCount = (int)($emp['FaceEmbeddingCount'] ?? 0);
                                 $isCurrent = $eId === $selectedId;
                                 ?>
-                                <tr class="employee-row-item <?= $isCurrent ? 'is-selected' : '' ?>" style="border-bottom: 1px solid #f8fafc; <?= $isCurrent ? 'background: #eff6ff;' : '' ?>" data-search="<?= $h(strtolower($eCode . ' ' . $eName)) ?>">
-                                    <td style="font-weight: 600; color: #1e293b;"><?= $h($eCode) ?></td>
-                                    <td><?= $h($eName) ?></td>
+                                <tr class="employee-row-item <?= $isCurrent ? 'is-selected' : '' ?>" style="border-bottom: 1px solid #f8fafc; <?= $isCurrent ? 'background: #f1f5f9;' : '' ?>" data-search="<?= $h(strtolower($eCode . ' ' . $eName)) ?>">
+                                    <td style="font-weight: 600; color: #0f172a;"><?= $h($eCode) ?></td>
+                                    <td style="color: #334155;"><?= $h($eName) ?></td>
                                     <td>
                                         <?php if ($eCount >= 5): ?>
-                                            <span style="color: #16a34a; font-weight: 600;">✓ 5</span>
+                                            <span style="color: #0f172a; font-weight: 600; font-size: 11px; background: #e2e8f0; padding: 1px 5px; border-radius: 3px;">5/5</span>
                                         <?php elseif ($eCount > 0): ?>
-                                            <span style="color: #d97706; font-weight: 600;"><?= $eCount ?></span>
+                                            <span style="color: #475467; font-weight: 600; font-size: 11px; background: #f1f5f9; padding: 1px 5px; border-radius: 3px;"><?= $eCount ?>/5</span>
                                         <?php else: ?>
-                                            <span style="color: #94a3b8;">0</span>
+                                            <span style="color: #94a3b8; font-size: 11px;">0/5</span>
                                         <?php endif; ?>
                                     </td>
                                     <td style="text-align: right;">
                                         <?php if ($isCurrent): ?>
-                                            <span style="font-weight: 700; color: #2563eb;">Đang chọn</span>
+                                            <span style="font-weight: 600; color: #0f172a; font-size: 11px; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">Đang chọn</span>
                                         <?php else: ?>
-                                            <a class="button button--secondary button--small" href="/?action=face_registration&amp;id=<?= $eId ?>" style="padding: 2px 6px; font-size: 11px;">Chọn</a>
+                                            <a class="face-table-select-btn" href="/?action=face_registration&amp;id=<?= $eId ?>">Chọn</a>
                                         <?php endif; ?>
                                     </td>
                                 </tr>
@@ -617,7 +727,7 @@ video.face-compact-camera-img {
     <dialog class="face-lightbox" data-face-lightbox aria-label="Ảnh mẫu khuôn mặt">
         <div class="face-lightbox-toolbar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <span data-face-lightbox-title style="font-weight: 600; font-size: 13px;">Ảnh mẫu khuôn mặt</span>
-            <button class="button button--secondary button--small" type="button" data-face-lightbox-close style="padding: 2px 8px; font-size: 12px;">Đóng</button>
+            <button class="face-btn-outline" type="button" data-face-lightbox-close style="padding: 2px 8px; font-size: 12px;">Đóng</button>
         </div>
         <img data-face-lightbox-image alt="Ảnh mẫu khuôn mặt phóng lớn" style="width: 100%; max-height: calc(100vh - 100px); object-fit: contain; border-radius: 6px;">
     </dialog>

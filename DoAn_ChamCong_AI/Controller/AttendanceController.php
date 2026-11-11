@@ -266,4 +266,53 @@ final class AttendanceController
         header('Cache-Control: no-store');
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     }
+
+    /** Màn hình Chấm Công Trực Tiếp (Live Kiosk). */
+    public function liveAttendance(): void
+    {
+        AuthController::requireAdmin();
+        $pageTitle = 'Trạm Chấm Công Trực Tiếp';
+        $latest = $this->attendance->findLatestPunch();
+        $recent = $this->attendance->findTodayRecentPunches(6);
+        $esp32StreamUrl = getenv('CAMERA_STREAM_URL') ?: 'http://192.168.1.14:81/stream';
+        require __DIR__ . '/../View/live_attendance.php';
+    }
+
+    /** API feed dữ liệu chấm công thời gian thực cho frontend polling (mỗi 1.5s). */
+    public function liveAttendanceFeed(): void
+    {
+        AuthController::requireAdmin();
+        $latest = $this->attendance->findLatestPunch();
+        $recent = $this->attendance->findTodayRecentPunches(6);
+
+        // Kiểm tra xem có ai đang đặt tay đo nhịp tim trên cảm biến MAX30102 không
+        $activeSession = false;
+        $currentSession = null;
+        try {
+            $aiBaseUrl = rtrim(getenv('AI_SERVICE_URL') ?: 'http://host.docker.internal:5001', '/');
+            $ctx = stream_context_create([
+                'http' => [
+                    'timeout' => 2.0,
+                    'ignore_errors' => true,
+                ],
+            ]);
+            $statusRaw = @file_get_contents($aiBaseUrl . '/api/iot/status', false, $ctx);
+            if ($statusRaw !== false) {
+                $statusData = json_decode($statusRaw, true);
+                if (!empty($statusData['active'])) {
+                    $activeSession = true;
+                    $currentSession = $statusData['session'] ?? null;
+                }
+            }
+        } catch (Throwable $e) {}
+
+        $this->jsonResponse([
+            'success' => true,
+            'active_session' => $activeSession,
+            'current_session' => $currentSession,
+            'latest' => $latest,
+            'recent' => $recent,
+            'server_time' => (new DateTimeImmutable('now', new DateTimeZone('Asia/Ho_Chi_Minh')))->format('H:i:s d/m/Y'),
+        ], 200);
+    }
 }

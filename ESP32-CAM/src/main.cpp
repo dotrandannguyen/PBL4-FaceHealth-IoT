@@ -187,7 +187,9 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             <label>Mật khẩu WiFi:</label>
             <input type="password" id="pass" name="pass" value="{PASS}" placeholder="Nhập mật khẩu (nếu có)">
             
-            <input type="hidden" name="server" value="{SERVER}">
+            <label>IP Máy chủ AI Server (Port 5001):</label>
+            <input type="text" id="server" name="server" value="{SERVER}" placeholder="Ví dụ: 192.168.1.182:5001">
+            <div style="font-size: 0.75rem; color: #f59e0b; margin-top: 4px;">⚠️ Lưu ý: Chỉ hỗ trợ Wi-Fi 2.4 GHz. Với iPhone, hãy bật "Tối đa hóa khả năng tương thích".</div>
             
             <button type="submit">💾 Lưu & Tự Động Kết Nối</button>
         </form>
@@ -406,13 +408,15 @@ bool connectWiFi() {
         // Bắn broadcast đồng bộ sang ESP8266 khi kết nối thành công (30 gói tin)
         broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url, 30);
 
-        // Duy trì SoftAP song song (WIFI_AP_STA) để vừa phục vụ Web Portal cứu hộ 24/7,
-        // vừa duy trì sóng nội bộ ESP-NOW ổn định truyền sang ESP8266
-        if (WiFi.getMode() != WIFI_AP_STA) {
-            WiFi.mode(WIFI_AP_STA);
-            WiFi.softAP(AP_SSID, AP_PASS, 1);
+        // Tối ưu nhiệt năng: Tắt phát sóng AP khi đã kết nối Wi-Fi router thành công
+        // Giải phóng hoàn toàn băng thông radio và DMA bộ nhớ cho luồng video camera
+        if (WiFi.getMode() != WIFI_STA) {
+            WiFi.softAPdisconnect(true);
+            WiFi.mode(WIFI_STA);
+            Serial.println("[POWER-SAVE] ✅ Da tat AP phu vi da ket noi WiFi router. Bo mach se mat hon.");
         }
-        WiFi.setSleep(false); // Không ngủ radio để ESP-NOW truyền nhận tức thời
+        WiFi.setSleep(true);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
         return true;
     } else {
@@ -422,7 +426,7 @@ bool connectWiFi() {
 }
 
 // =========================================================================
-// 4. CHỤP ẢNH & GỬI LÊN SERVER FLASK QUA HTTP POST (CHU KỲ 3 GIÂY)
+// 4. CHỤP ẢNH & GỬI LÊN SERVER FLASK QUA HTTP POST
 // =========================================================================
 // BÁO DANH IP LÊN MÁY CHỦ FLASK SERVER (MÁY TÍNH WINDOWS)
 // =========================================================================
@@ -437,7 +441,23 @@ void baoDanhLenServer() {
     HTTPClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
 
-    String register_url = DEFAULT_SERVER_REGISTER_URL;
+    // Xây dựng URL báo danh linh hoạt theo Server IP được cấu hình trong Web Portal
+    String host = server_url;
+    host.trim();
+    if (host.length() == 0) host = DEFAULT_SERVER_URL;
+    if (!host.startsWith("http://") && !host.startsWith("https://")) {
+        host = "http://" + host;
+    }
+    // Nếu chưa có cổng thì bổ sung cổng mặc định :5001
+    int protoEnd = host.indexOf("://") + 3;
+    if (host.indexOf(':', protoEnd) == -1) {
+        host += ":5001";
+    }
+    if (host.endsWith("/")) {
+        host = host.substring(0, host.length() - 1);
+    }
+    String register_url = host + "/api/register_camera";
+
     if (http.begin(client, register_url)) {
         http.addHeader("Content-Type", "application/json");
 
@@ -450,7 +470,7 @@ void baoDanhLenServer() {
             Serial.printf("[NODE 1] Da bao danh len Flask Server: HTTP %d (IP: %s, Port: %d)\n", 
                           httpCode, WiFi.localIP().toString().c_str(), STREAM_SERVER_PORT);
         } else {
-            Serial.printf("[NODE 1] Khong the bao danh len Server (%d)\n", httpCode);
+            Serial.printf("[NODE 1] Khong the bao danh len Server %s (%d)\n", register_url.c_str(), httpCode);
         }
         http.end();
     }
@@ -488,10 +508,17 @@ void setup() {
         }
     }
 
-    // 3. LUÔN LUÔN BẬT WEB PORTAL AP NGAY TỪ ĐẦU (Hoạt động liên tục 24/7)
+    // 3. Bật Web Portal cấu hình AP (khởi tạo WiFi stack & LwIP)
     startConfigPortal();
 
-    // 4. Thêm các mạng Wi-Fi từ kho lưu trữ (WiFi Vault) vào danh sách Multi-WiFi
+    // 4. Khởi động Camera Stream Server On-Demand trên cổng 81 NGAY TỪ ĐẦU (Luôn mở 24/7)
+    if (!isCameraServerStarted) {
+        startCameraServer(STREAM_SERVER_PORT);
+        isCameraServerStarted = true;
+        Serial.printf("[STREAM] ✅ Camera Server da san sang tren cong %d (ho tro ca AP & STA)\n", STREAM_SERVER_PORT);
+    }
+
+    // 5. Thêm các mạng Wi-Fi từ kho lưu trữ (WiFi Vault) vào danh sách Multi-WiFi
     loadSavedWifis();
     for (int i = 0; i < savedWifiCount; i++) {
         if (savedWifis[i].ssid.length() > 0) {
@@ -503,19 +530,19 @@ void setup() {
         wifiMulti.addAP(wifi_ssid.c_str(), wifi_pass.c_str());
     }
 
-    // 5. Tự động kết nối Wi-Fi tốt nhất
+    // 6. Tự động kết nối Wi-Fi tốt nhất
     connectWiFi();
 }
 
 void loop() {
-    // 1. Luôn luôn phục vụ Web Portal trên cả 192.168.4.1 và esp32cam.local
+    // 1. Luôn phục vụ Web Portal nếu AP đang bật hoặc qua mDNS
     server.handleClient();
 
     unsigned long now = millis();
     static unsigned long lastCheck = 0;
     static unsigned long lastHeartbeat = 0;
 
-    // 2. Tự động phục hồi kết nối ngầm nếu bị mất mạng Wi-Fi
+    // 2. Tự động phục hồi kết nối nếu bị mất mạng Wi-Fi
     if (WiFi.status() != WL_CONNECTED) {
         // Tự động bật lại AP dự phòng nếu router bị mất kết nối để người dùng vẫn cấu hình được
         if (WiFi.getMode() != WIFI_AP_STA && WiFi.getMode() != WIFI_AP) {
@@ -531,7 +558,7 @@ void loop() {
             digitalWrite(INDICATOR_LED_PIN, !digitalRead(INDICATOR_LED_PIN));
         }
 
-        if (now - lastCheck > 6000) {
+        if (now - lastCheck > 8000) {
             lastCheck = now;
             if (wifiMulti.run() == WL_CONNECTED) {
                 connectWiFi();
@@ -544,14 +571,6 @@ void loop() {
         if (now - lastHeartbeat >= 30000) {
             lastHeartbeat = now;
             baoDanhLenServer();
-        }
-
-        // Đồng bộ chu kỳ sang ESP8266 định kỳ mỗi 20 giây (bắn 3 gói tin nhanh)
-        // Đảm bảo ESP8266 bật nguồn lúc nào cũng tự động nhận được cấu hình Wi-Fi mới!
-        static unsigned long lastEspNowSync = 0;
-        if (now - lastEspNowSync >= 20000) {
-            lastEspNowSync = now;
-            broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url, 3);
         }
     }
 

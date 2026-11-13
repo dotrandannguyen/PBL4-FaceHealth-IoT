@@ -179,8 +179,6 @@ void onDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
     Serial.printf("[ESP-NOW] Server: %s\n", pkt.server);
     Serial.println("[ESP-NOW] ===============================================");
 
-    showLcd("DONG BO TU ESP32", String(pkt.ssid));
-
     // Làm sạch server host
     String newServer = String(pkt.server);
     if (newServer.startsWith("http://")) newServer = newServer.substring(7);
@@ -189,6 +187,17 @@ void onDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
     if (colon > 0) newServer = newServer.substring(0, colon);
     int slash = newServer.indexOf('/');
     if (slash > 0) newServer = newServer.substring(0, slash);
+
+    // KIỂM TRA TRÙNG LẶP: Nếu ESP8266 đã kết nối WiFi VÀ cấu hình nhận được giống hệt hiện tại -> KHÔNG RESTART
+    if (WiFi.status() == WL_CONNECTED && 
+        String(pkt.ssid) == wifi_ssid && 
+        String(pkt.pass) == wifi_pass && 
+        newServer == serverHost) {
+        Serial.println("[ESP-NOW] Thong tin trung voi mang dang chay on dinh. Bo qua restart.");
+        return;
+    }
+
+    showLcd("DONG BO TU ESP32", String(pkt.ssid));
 
     // Lưu vào Flash vĩnh viễn
     saveCredentials(pkt.ssid, pkt.pass, newServer.c_str());
@@ -531,21 +540,7 @@ void loop() {
             }
         }
 
-        // Định kỳ 15 giây: Thử kết nối lại danh sách Multi-WiFi phòng khi router vừa lên sóng
-        static unsigned long lastWifiRetry = 0;
-        if (now - lastWifiRetry > 15000) {
-            lastWifiRetry = now;
-            Serial.println("[WiFi] Thu quet lai danh sach Multi-WiFi...");
-            if (wifiMulti.run() == WL_CONNECTED) {
-                wifi_ssid = WiFi.SSID();
-                Serial.printf("\n[WiFi] Da ket noi thanh cong den '%s'! IP: %s\n", wifi_ssid.c_str(), WiFi.localIP().toString().c_str());
-                showLcd("WIFI KET NOI OK!", WiFi.localIP().toString());
-                delay(1200);
-                currentState = STATE_IDLE;
-                showLcd("DAT TAY LEN CAM", "BIEN DE BAT DAU");
-                return;
-            }
-        }
+
 
         // CƠ CHẾ CỨU HỘ PHỤ: Nếu chờ quá 30 giây mà không có sóng ESP-NOW từ ESP32,
         // ESP8266 tự phát SoftAP "ESP8266-HEALTH-CONFIG" (IP 192.168.4.1) để cấu hình trực tiếp

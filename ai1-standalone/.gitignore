@@ -1,0 +1,8 @@
+.venv/
+.venv-*/
+ai1_standalone_data/
+.insightface/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage

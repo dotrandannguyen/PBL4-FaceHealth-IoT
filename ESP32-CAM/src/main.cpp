@@ -191,8 +191,21 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             
             <button type="submit">💾 Lưu & Tự Động Kết Nối</button>
         </form>
+        <div style="margin-top: 15px; text-align: center;">
+            <button type="button" style="background:#059669; padding: 10px; font-size: 0.9rem;" onclick="syncNow()">⚡ Bắn Sóng Sang ESP8266 Ngay</button>
+            <div id="syncMsg" style="font-size: 0.8rem; color: #34d399; margin-top: 6px;"></div>
+        </div>
     </div>
     <script>
+    function syncNow() {
+        var msg = document.getElementById('syncMsg');
+        msg.textContent = 'Đang phát sóng đồng bộ sang ESP8266...';
+        fetch('/sync_now').then(function(r){ return r.json(); }).then(function(d){
+            msg.textContent = d.message || 'Đã phát sóng đồng bộ!';
+        }).catch(function(e){
+            msg.textContent = 'Lỗi gửi lệnh!';
+        });
+    }
     function onSelectWifi(sel) {
         if (sel.value === "new") {
             document.getElementById('ssid').value = "";
@@ -233,9 +246,11 @@ void handleRoot() {
 // =========================================================================
 // ĐỒNG BỘ CẤU HÌNH WIFI SANG ESP8266 QUA SÓNG ESP-NOW NỘI BỘ (KHÔNG CẦN DÂY)
 // =========================================================================
-void broadcastWifiCredentials(const String& target_ssid, const String& target_pass, const String& target_server) {
+void broadcastWifiCredentials(const String& target_ssid, const String& target_pass, const String& target_server, int bursts = 25) {
+    if (target_ssid.length() == 0) return;
+
     Serial.println("\n[ESP-NOW] ===============================================");
-    Serial.printf("[ESP-NOW] Dang phat song dong bo WiFi sang ESP8266: '%s'...\n", target_ssid.c_str());
+    Serial.printf("[ESP-NOW] Dang phat song dong bo WiFi sang ESP8266: '%s' (%d goi)...\n", target_ssid.c_str(), bursts);
 
     wifi_mode_t currentMode = WiFi.getMode();
     if (currentMode != WIFI_AP_STA && currentMode != WIFI_STA && currentMode != WIFI_AP) {
@@ -244,7 +259,7 @@ void broadcastWifiCredentials(const String& target_ssid, const String& target_pa
     }
 
     if (esp_now_init() != ESP_OK) {
-        Serial.println("[ESP-NOW] Khong the khoi tao ESP-NOW (co the da khoi tao truoc do)!");
+        Serial.println("[ESP-NOW] ESP-NOW da san sang.");
     }
 
     esp_now_peer_info_t peerInfo = {};
@@ -254,15 +269,14 @@ void broadcastWifiCredentials(const String& target_ssid, const String& target_pa
     }
     peerInfo.channel = 0; // 0 = Kênh hiện tại của card Wi-Fi
     peerInfo.encrypt = false;
-    // Khắc phục lỗi ESP_ERR_ESPNOW_IF (12392): Ưu tiên WIFI_IF_AP vì SoftAP hoạt động liên tục 24/7
-    peerInfo.ifidx = WIFI_IF_AP;
+    peerInfo.ifidx = (WiFi.getMode() == WIFI_STA) ? WIFI_IF_STA : WIFI_IF_AP;
 
     if (esp_now_is_peer_exist(peerInfo.peer_addr)) {
         esp_now_del_peer(peerInfo.peer_addr);
     }
     esp_err_t addRes = esp_now_add_peer(&peerInfo);
-    if (addRes != ESP_OK) {
-        Serial.printf("[ESP-NOW] Add peer tren AP that bai (%d), thu fallback WIFI_IF_STA...\n", addRes);
+    if (addRes != ESP_OK && peerInfo.ifidx == WIFI_IF_AP) {
+        Serial.printf("[ESP-NOW] Add peer tren AP that bai (%d), fallback WIFI_IF_STA...\n", addRes);
         peerInfo.ifidx = WIFI_IF_STA;
         esp_now_add_peer(&peerInfo);
     }
@@ -274,18 +288,16 @@ void broadcastWifiCredentials(const String& target_ssid, const String& target_pa
     strncpy(pkt.pass, target_pass.c_str(), sizeof(pkt.pass) - 1);
     strncpy(pkt.server, target_server.c_str(), sizeof(pkt.server) - 1);
 
-    // Phát sóng liên tục trong ~3.0 giây (30 lần x 100ms) để ESP8266 đang quét kênh bắt chắc chắn 100%
     int successCount = 0;
-    for (int i = 0; i < 30; i++) {
+    int packetDelay = (bursts > 5) ? 80 : 25;
+    for (int i = 0; i < bursts; i++) {
         esp_err_t result = esp_now_send(peerInfo.peer_addr, (uint8_t*)&pkt, sizeof(pkt));
         if (result == ESP_OK) {
             successCount++;
-        } else if (i == 0) {
-            Serial.printf("[ESP-NOW] Gui broadcast lan dau ma loi: %d\n", result);
         }
-        delay(100);
+        delay(packetDelay);
     }
-    Serial.printf("[ESP-NOW] Hoan tat phat song! Thanh cong: %d/30 goi tin.\n", successCount);
+    Serial.printf("[ESP-NOW] Hoan tat phat song! Thanh cong: %d/%d goi tin.\n", successCount, bursts);
     Serial.println("[ESP-NOW] ===============================================");
 }
 
@@ -314,8 +326,8 @@ void handleSave() {
         
         delay(500);
 
-        // Đồng bộ ngay lập tức sang ESP8266 qua sóng ESP-NOW (chạy trong ~2.5 giây)
-        broadcastWifiCredentials(wifi_ssid, wifi_pass, server_url);
+        // Đồng bộ ngay lập tức sang ESP8266 qua sóng ESP-NOW (30 gói tin)
+        broadcastWifiCredentials(wifi_ssid, wifi_pass, server_url, 30);
 
         delay(1000);
         ESP.restart();
@@ -343,6 +355,10 @@ void startConfigPortal() {
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/save", HTTP_POST, handleSave);
+    server.on("/sync_now", HTTP_GET, []() {
+        broadcastWifiCredentials(wifi_ssid, wifi_pass, server_url, 30);
+        server.send(200, "application/json", "{\"success\":true,\"message\":\"Da phat 30 goi tin dong bo sang ESP8266!\"}");
+    });
     server.begin();
 }
 
@@ -387,18 +403,16 @@ bool connectWiFi() {
         // Báo danh IP lên Flask Server máy tính
         baoDanhLenServer();
 
-        // Bắn broadcast đồng bộ sang ESP8266 khi kết nối thành công
-        broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url);
+        // Bắn broadcast đồng bộ sang ESP8266 khi kết nối thành công (30 gói tin)
+        broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url, 30);
 
-        // Tối ưu nhiệt năng: Tắt phát sóng AP khi đã kết nối Wi-Fi router thành công
-        // Cho phép chip Wi-Fi RF kích hoạt Modem-Sleep để hạ nhiệt độ bo mạch
-        if (WiFi.getMode() != WIFI_STA) {
-            WiFi.softAPdisconnect(true);
-            WiFi.mode(WIFI_STA);
-            Serial.println("[POWER-SAVE] ✅ Da tat AP phu vi da ket noi WiFi router. Bo mach se mat hon.");
+        // Duy trì SoftAP song song (WIFI_AP_STA) để vừa phục vụ Web Portal cứu hộ 24/7,
+        // vừa duy trì sóng nội bộ ESP-NOW ổn định truyền sang ESP8266
+        if (WiFi.getMode() != WIFI_AP_STA) {
+            WiFi.mode(WIFI_AP_STA);
+            WiFi.softAP(AP_SSID, AP_PASS, 1);
         }
-        WiFi.setSleep(true);
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        WiFi.setSleep(false); // Không ngủ radio để ESP-NOW truyền nhận tức thời
 
         return true;
     } else {
@@ -530,6 +544,14 @@ void loop() {
         if (now - lastHeartbeat >= 30000) {
             lastHeartbeat = now;
             baoDanhLenServer();
+        }
+
+        // Đồng bộ chu kỳ sang ESP8266 định kỳ mỗi 20 giây (bắn 3 gói tin nhanh)
+        // Đảm bảo ESP8266 bật nguồn lúc nào cũng tự động nhận được cấu hình Wi-Fi mới!
+        static unsigned long lastEspNowSync = 0;
+        if (now - lastEspNowSync >= 20000) {
+            lastEspNowSync = now;
+            broadcastWifiCredentials(WiFi.SSID(), wifi_pass, server_url, 3);
         }
     }
 

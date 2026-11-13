@@ -787,4 +787,9 @@ if __name__ == "__main__":
     # Tải trước cả 2 mô hình AI
     get_face_engine()
     get_status_predictor()
-    app.run(host=os.environ.get("AI_BIND_HOST", "127.0.0.1"), port=PORT, threaded=True)
+    app.run(
+        host=os.environ.get("AI_BIND_HOST", "127.0.0.1"),
+        port=PORT,
+        threaded=True,
+        load_dotenv=False,
+    )

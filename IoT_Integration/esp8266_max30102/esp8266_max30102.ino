@@ -17,6 +17,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
 #include <WiFiClient.h>
 #include <espnow.h>
 #include <EEPROM.h>
@@ -199,6 +200,106 @@ void onDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
 }
 
 // =========================================================================
+// KHỞI TẠO VÀ BẢO TRÌ ESP-NOW AN TOÀN TRÊN ESP8266
+// =========================================================================
+bool initEspNow() {
+    esp_now_deinit(); // Luôn deinit trước khi init lại trên ESP8266 để tránh lỗi return -1
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(50);
+    wifi_set_channel(1); // Cố định Channel 1 ban đầu trùng với AP của ESP32-CAM
+    if (esp_now_init() == 0) {
+        esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
+        esp_now_register_recv_cb(onDataRecv);
+        Serial.println("[ESP-NOW] Khoi tao ESP-NOW thanh cong (COMBO mode, Channel 1)!");
+        return true;
+    } else {
+        Serial.println("[ESP-NOW] Khoi tao ESP-NOW that bai!");
+        return false;
+    }
+}
+
+// =========================================================================
+// WEB PORTAL CỨU HỘ MẠNG TRỰC TIẾP TRÊN ESP8266 (FAIL-SAFE AP 192.168.4.1)
+// =========================================================================
+ESP8266WebServer emergencyServer(80);
+bool isEmergencyApActive = false;
+
+const char EMERGENCY_PORTAL_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cài Đặt WiFi ESP8266</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #fff; padding: 20px; display: flex; justify-content: center; }
+        .box { background: #1e293b; padding: 24px; border-radius: 12px; width: 100%; max-width: 360px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        h2 { color: #38bdf8; text-align: center; margin-bottom: 6px; font-size: 1.25rem; }
+        p { color: #94a3b8; font-size: 0.85rem; text-align: center; margin-bottom: 16px; }
+        label { font-size: 0.85rem; font-weight: 600; display: block; margin-top: 12px; margin-bottom: 4px; }
+        input { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.95rem; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; margin-top: 20px; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>💓 ESP8266 Cứu Hộ Mạng</h2>
+        <p>Cài đặt Wi-Fi cho trạm đo nhịp tim & SpO2</p>
+        <form action="/save" method="POST">
+            <label>Tên WiFi (SSID):</label>
+            <input type="text" name="ssid" value="{SSID}" placeholder="Nhập tên WiFi" required>
+            <label>Mật khẩu WiFi:</label>
+            <input type="password" name="pass" value="{PASS}" placeholder="Nhập mật khẩu (nếu có)">
+            <label>IP Máy chủ Server PC (Port 5001):</label>
+            <input type="text" name="server" value="{SERVER}" placeholder="Ví dụ: 192.168.1.182" required>
+            <button type="submit">💾 Lưu & Khởi Động Lại</button>
+        </form>
+    </div>
+</body>
+</html>
+)rawliteral";
+
+void handleEmergencyRoot() {
+    String html = FPSTR(EMERGENCY_PORTAL_HTML);
+    html.replace("{SSID}", wifi_ssid);
+    html.replace("{PASS}", wifi_pass);
+    html.replace("{SERVER}", serverHost);
+    emergencyServer.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleEmergencySave() {
+    if (emergencyServer.hasArg("ssid")) {
+        String newSsid = emergencyServer.arg("ssid");
+        String newPass = emergencyServer.hasArg("pass") ? emergencyServer.arg("pass") : "";
+        String newServer = emergencyServer.hasArg("server") ? emergencyServer.arg("server") : serverHost;
+
+        saveCredentials(newSsid.c_str(), newPass.c_str(), newServer.c_str());
+
+        emergencyServer.send(200, "text/html; charset=utf-8", 
+            "<h2 style='font-family:sans-serif;text-align:center;color:#16a34a;margin-top:50px;'>✅ Đã lưu cấu hình!<br>Đang khởi động lại kết nối mạng mới...</h2>");
+        delay(1500);
+        ESP.restart();
+    } else {
+        emergencyServer.send(400, "text/plain", "Thieu ten WiFi!");
+    }
+}
+
+void startEmergencyApPortal() {
+    if (isEmergencyApActive) return;
+    isEmergencyApActive = true;
+    Serial.println("\n[EMERGENCY-AP] Khoi dong SoftAP cuu ho 'ESP8266-HEALTH-CONFIG'...");
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP("ESP8266-HEALTH-CONFIG", nullptr, 1);
+    emergencyServer.on("/", HTTP_GET, handleEmergencyRoot);
+    emergencyServer.on("/save", HTTP_POST, handleEmergencySave);
+    emergencyServer.begin();
+    showLcd("AP: ESP8266-CFG", "IP: 192.168.4.1");
+    Serial.printf("[EMERGENCY-AP] Mo trinh duyet: http://%s/\n", WiFi.softAPIP().toString().c_str());
+}
+
+// =========================================================================
 // BỘ LỌC TRUNG VỊ (MEDIAN FILTER)
 // =========================================================================
 int getMedianInt(int arr[], int n) {
@@ -361,24 +462,15 @@ void setup() {
     }
 
     // 6. Cấu hình WiFi và kích hoạt ESP-NOW sẵn sàng nhận đồng bộ
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    if (esp_now_init() == 0) {
-        esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
-        esp_now_register_recv_cb(onDataRecv);
-        Serial.println("[ESP-NOW] San sang nhan broadcast dong bo WiFi!");
-    } else {
-        Serial.println("[ESP-NOW] Khoi tao ESP-NOW that bai!");
-    }
+    initEspNow();
 
     // Kết nối đến mạng WiFi tốt nhất (Multi-WiFi)
     Serial.printf("[WiFi] Dang quet va ket noi mang WiFi tot nhat (Multi-WiFi)...\n");
     showLcd("DANG KET NOI...", "MULTI-WIFI SCAN");
 
+    // Rút ngắn thời gian quét mạng cũ xuống còn ~3.2s (8 lần x 400ms) để không bỏ lỡ sóng ESP32
     int retry = 0;
-    while (wifiMulti.run() != WL_CONNECTED && retry < 25) {
+    while (wifiMulti.run() != WL_CONNECTED && retry < 8) {
         delay(400);
         Serial.print(".");
         retry++;
@@ -393,18 +485,8 @@ void setup() {
         currentState = STATE_IDLE;
         showLcd("DAT TAY LEN CAM", "BIEN DE BAT DAU");
     } else {
-        Serial.println("\n[WiFi] Ket noi that bai! Dang bat che do cho dong bo tu ESP32-CAM...");
-        WiFi.disconnect(); // Dừng kết nối ngầm để giải phóng radio hoàn toàn cho ESP-NOW
-        delay(100);
-
-        if (esp_now_init() == 0) {
-            esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
-            esp_now_register_recv_cb(onDataRecv);
-            Serial.println("[ESP-NOW] Da san sang nhan broadcast dong bo WiFi tu ESP32!");
-        } else {
-            Serial.println("[ESP-NOW] Khoi tao ESP-NOW that bai!");
-        }
-
+        Serial.println("\n[WiFi] Khong tim thay mang quen thuoc! Bat che do cho dong bo tu ESP32-CAM...");
+        initEspNow();
         currentState = STATE_WAIT_WIFI_SYNC;
         showLcd("CHO DONG BO WIFI", "TU ESP32-CAM...");
     }
@@ -418,30 +500,71 @@ void loop() {
     unsigned long now = millis();
 
     // -------------------------------------------------------------
-    // NẾU CHƯA CÓ WIFI: LIÊN TỤC QUÉT KÊNH (CHANNEL HOPPING) CHỜ ESP32 BẮN SÓNG
+    // NẾU CHƯA CÓ WIFI: LẮNG NGHE ESP-NOW THÔNG MINH + CỨU HỘ WEBSERVER
     // -------------------------------------------------------------
     if (currentState == STATE_WAIT_WIFI_SYNC) {
+        static unsigned long syncWaitStart = 0;
+        if (syncWaitStart == 0) syncWaitStart = now;
+
+        // Dwell channel thông minh: 70% thời gian dừng ở Channel 1 (kênh AP chuẩn của ESP32)
+        // 30% thời gian lướt qua các kênh còn lại (2-13) để đón sóng router.
         static unsigned long lastHopTime = 0;
         static int hopChannel = 1;
-        if (now - lastHopTime > 120) { // Quét nhanh 120ms/kênh (1-13 chỉ mất ~1.5s, đảm bảo bắt trọn gói tin của ESP32)
-            lastHopTime = now;
-            wifi_set_channel(hopChannel);
-            hopChannel++;
-            if (hopChannel > 13) hopChannel = 1;
+        static bool onChannel1 = true;
+
+        if (onChannel1) {
+            if (now - lastHopTime > 400) { // Dừng ở Channel 1 trong 400ms
+                lastHopTime = now;
+                onChannel1 = false;
+                hopChannel = 2;
+                wifi_set_channel(hopChannel);
+            }
+        } else {
+            if (now - lastHopTime > 120) { // Quét nhanh các kênh khác 120ms
+                lastHopTime = now;
+                hopChannel++;
+                if (hopChannel > 13) {
+                    hopChannel = 1;
+                    onChannel1 = true;
+                }
+                wifi_set_channel(hopChannel);
+            }
         }
-        delay(10);
-        return; // Chưa có Wi-Fi -> không đọc cảm biến, tập trung lắng nghe ESP-NOW
+
+        // Định kỳ 15 giây: Thử kết nối lại danh sách Multi-WiFi phòng khi router vừa lên sóng
+        static unsigned long lastWifiRetry = 0;
+        if (now - lastWifiRetry > 15000) {
+            lastWifiRetry = now;
+            Serial.println("[WiFi] Thu quet lai danh sach Multi-WiFi...");
+            if (wifiMulti.run() == WL_CONNECTED) {
+                wifi_ssid = WiFi.SSID();
+                Serial.printf("\n[WiFi] Da ket noi thanh cong den '%s'! IP: %s\n", wifi_ssid.c_str(), WiFi.localIP().toString().c_str());
+                showLcd("WIFI KET NOI OK!", WiFi.localIP().toString());
+                delay(1200);
+                currentState = STATE_IDLE;
+                showLcd("DAT TAY LEN CAM", "BIEN DE BAT DAU");
+                return;
+            }
+        }
+
+        // CƠ CHẾ CỨU HỘ PHỤ: Nếu chờ quá 30 giây mà không có sóng ESP-NOW từ ESP32,
+        // ESP8266 tự phát SoftAP "ESP8266-HEALTH-CONFIG" (IP 192.168.4.1) để cấu hình trực tiếp
+        if (now - syncWaitStart > 30000 && !isEmergencyApActive) {
+            startEmergencyApPortal();
+        }
+
+        if (isEmergencyApActive) {
+            emergencyServer.handleClient();
+        }
+
+        delay(5);
+        return; // Chưa có Wi-Fi -> không đọc cảm biến, tập trung lắng nghe ESP-NOW / Portal
     }
 
     // Kiểm tra rớt mạng khi đang ở STATE_IDLE
     if (WiFi.status() != WL_CONNECTED && currentState == STATE_IDLE) {
         Serial.println("[WiFi] Mat ket noi WiFi! Chuyen sang che do cho dong bo ESP-NOW...");
-        WiFi.disconnect();
-        delay(50);
-        if (esp_now_init() == 0) {
-            esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
-            esp_now_register_recv_cb(onDataRecv);
-        }
+        initEspNow();
         currentState = STATE_WAIT_WIFI_SYNC;
         showLcd("CHO DONG BO WIFI", "TU ESP32-CAM...");
         return;
